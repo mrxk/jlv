@@ -18,6 +18,7 @@ type groupsContent struct {
 type groupsError struct {
 	err     error
 	message string
+	jq      string
 }
 
 type outputContent struct {
@@ -28,6 +29,7 @@ type outputContent struct {
 type outputError struct {
 	err     error
 	message string
+	jq      string
 }
 
 func createGroupsSelectorArg(selector string) string {
@@ -54,16 +56,12 @@ func loadGroups(selector, path string) tea.Cmd {
 			return groupsError{
 				message: string(content),
 				err:     err,
+				jq:      "jq -r '" + selector + "' '" + path + "'",
 			}
 		}
 		contentS := string(content)
 		contentS = strings.TrimSpace(contentS)
-		if contentS == "" {
-			return groupsContent{
-				items: []list.Item{},
-			}
-		}
-		if contentS[0] == '{' || contentS[0] == '[' {
+		if contentS == "" || contentS[0] == '{' || contentS[0] == '[' {
 			return groupsContent{
 				items: []list.Item{},
 			}
@@ -87,6 +85,9 @@ func createContentArg(selector, group, format string) string {
 	if format == "" {
 		format = "."
 	}
+	if group == "*" {
+		return fmt.Sprintf(".|select(%s)|%s", selector, format)
+	}
 	return fmt.Sprintf(".|select(%s==\"%s\")|%s", selector, group, format)
 }
 
@@ -99,6 +100,7 @@ func loadContent(selector, group, format, path string) tea.Cmd {
 			return outputError{
 				message: string(content),
 				err:     err,
+				jq:      "jq -r '" + arg + "' '" + path + "'",
 			}
 		}
 		contentS := string(content)

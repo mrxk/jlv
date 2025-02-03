@@ -19,6 +19,7 @@ var _ tea.Model = (*Model)(nil)
 
 type Model struct {
 	groups      list.Model
+	content     string
 	output      viewport.Model
 	selector    textinput.Model
 	format      textinput.Model
@@ -27,6 +28,7 @@ type Model struct {
 	jq          string
 	log         io.Writer
 	zoomed      bool
+	wrapped     bool
 	width       int
 	height      int
 }
@@ -56,6 +58,7 @@ func NewModel(opts ModelOpts) *Model {
 	m.groups.Title = "groups"
 	m.groups.SetShowHelp(false)
 	m.groups.SetShowTitle(false)
+	m.groups.SetShowStatusBar(false)
 	m.output = viewport.New(0, 0)
 	return m
 }
@@ -108,8 +111,14 @@ func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.format.Width = m.width - 2
 	m.groups.SetWidth(40)
 	m.groups.SetHeight(m.height - 10)
-	m.output.Width = m.width - 40 - 4
-	m.output.Height = m.height - 10
+	if m.zoomed {
+		m.output.Height = m.height - 2
+		m.output.Width = m.width
+	} else {
+		m.output.Width = m.width - 40 - 4
+		m.output.Height = m.height - 10
+	}
+	m.output.SetContent(wrap(m.content, m.output.Width))
 	return m, nil
 }
 
@@ -165,11 +174,6 @@ func (m *Model) handleGlobalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 	case "f":
 		if m.selectedIdx == 3 {
 			m.zoomed = !m.zoomed
-			if m.zoomed {
-				m.output.Height = m.height - 2
-				m.output.Width = m.width
-				return m, cmd, true
-			}
 			newModel, cmd := m.handleWindowSize(tea.WindowSizeMsg{Height: m.height, Width: m.width})
 			return newModel, cmd, true
 		}
@@ -181,26 +185,51 @@ func (m *Model) handleGlobalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 func (m *Model) handleGroupsContent(msg groupsContent) (tea.Model, tea.Cmd) {
 	cmd := m.groups.SetItems(msg.items)
 	selectedItem := m.groups.SelectedItem()
-	if selectedItem == nil {
-		m.output.SetContent("")
-		return m, cmd
+	selectedItemText := "*"
+	if selectedItem != nil {
+		spew.Fdump(m.log, m.groups.Index())
+		selectedItemText = selectedItem.FilterValue()
 	}
-	return m, tea.Batch(loadContent(m.selector.Value(), selectedItem.FilterValue(), m.format.Value(), m.path), cmd)
+	return m, tea.Batch(loadContent(m.selector.Value(), selectedItemText, m.format.Value(), m.path), cmd)
 }
 
 func (m *Model) handleGroupsError(msg groupsError) (tea.Model, tea.Cmd) {
 	cmd := m.groups.SetItems([]list.Item{})
+	m.jq = msg.jq
 	m.output.SetContent(msg.err.Error() + "\n" + msg.message)
 	return m, cmd
 }
 
 func (m *Model) handleOutputContent(msg outputContent) (tea.Model, tea.Cmd) {
 	m.jq = msg.jq
-	m.output.SetContent(msg.content)
+	m.content = msg.content
+	m.output.SetContent(wrap(msg.content, m.output.Width))
 	return m, nil
 }
 
+func wrap(content string, width int) string {
+	origLines := strings.Split(content, "\n")
+	newLines := make([]string, 0, len(origLines)*2)
+	for _, origLine := range origLines {
+		runes := []rune(origLine)
+		runesL := len(runes)
+		for i := 0; i < runesL; i += width {
+			max := min(runesL, i+width)
+			newLines = append(newLines, string(runes[i:max]))
+		}
+	}
+	return strings.Join(newLines, "\n")
+}
+
+func min(x, y int) int {
+	if x < y {
+		return x
+	}
+	return y
+}
+
 func (m *Model) handleOutputError(msg outputError) (tea.Model, tea.Cmd) {
+	m.jq = msg.jq
 	m.output.SetContent(msg.err.Error() + "\n" + msg.message)
 	return m, nil
 }
