@@ -112,9 +112,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // View returns the view for this model. If the application is zoomed on the
-// output when then just the output window and footer are rendered.  Otherwise,
-// all of the windows are rendered, with the unfocused windows shown with a
-// faint style.
+// output window then just the output window and footer are rendered.
+// Otherwise, all of the windows are rendered, with the unfocused windows shown
+// with a faint style.
 func (m *Model) View() string {
 	if m.zoomed {
 		border := lipgloss.NewStyle().Border(lipgloss.NormalBorder(), false, false, true).BorderForeground(lipgloss.Color("#9ACD32"))
@@ -274,8 +274,8 @@ func (m *Model) handleGroupsContent(msg groupsContent) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(loadContent(m.selector.Value(), selectedItemText, m.format.Value(), m.path), cmd)
 }
 
-// handleGroupsError handles the gruopsError message. It clears the list of
-// groups, sets the jq command in the model and sets the output window to
+// handleGroupsError handles the groupsError message. It clears the list of
+// groups, sets the jq command in the model, and sets the output window to
 // display the error.
 func (m *Model) handleGroupsError(msg groupsError) (tea.Model, tea.Cmd) {
 	cmd := m.groups.SetItems([]list.Item{})
@@ -311,10 +311,10 @@ func (m *Model) handleSelectorMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 	origValue := m.selector.Value()
 	m.selector, cmd = m.selector.Update(msg)
 	newValue := m.selector.Value()
-	if origValue != newValue {
-		return m, tea.Batch(loadGroups(newValue, m.path), cmd)
+	if origValue == newValue {
+		return m, cmd
 	}
-	return m, cmd
+	return m, tea.Batch(loadGroups(newValue, m.path), cmd)
 }
 
 // handleFormatMessage handles messages sent to the format window. If the format
@@ -326,15 +326,15 @@ func (m *Model) handleFormatMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 	origValue := m.format.Value()
 	m.format, cmd = m.format.Update(msg)
 	newValue := m.format.Value()
-	if origValue != newValue {
-		selectedItem := m.groups.SelectedItem()
-		if selectedItem == nil {
-			m.output.SetContent("")
-			return m, cmd
-		}
-		return m, tea.Batch(loadContent(m.selector.Value(), selectedItem.FilterValue(), newValue, m.path), cmd)
+	if origValue == newValue {
+		return m, cmd
 	}
-	return m, cmd
+	selectedItem := m.groups.SelectedItem()
+	if selectedItem == nil {
+		m.output.SetContent("")
+		return m, cmd
+	}
+	return m, tea.Batch(loadContent(m.selector.Value(), selectedItem.FilterValue(), newValue, m.path), cmd)
 }
 
 // handleGroupsMessage handles messages sent to the groups list window. If the
