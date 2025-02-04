@@ -9,6 +9,20 @@ import (
 	"github.com/mrxk/jlv/internal/model"
 )
 
+const (
+	jsonlogUsage = `jlv
+
+Usage:
+	jlv [options] <path>
+
+Options:
+	-s <selector>, --selector=<selector> JSON path to grouping field.
+	-f <format>, --format=<format>       Format of output.
+	`
+)
+
+// parseArgs takes a usage sting and returns a populated model.ModelOpts from
+// the current os.Args.
 func parseArgs(usage string) (model.ModelOpts, error) {
 	opts := model.ModelOpts{}
 	docOpts, err := docopt.ParseDoc(usage)
@@ -32,15 +46,3 @@ func main() {
 		os.Exit(1)
 	}
 }
-
-const (
-	jsonlogUsage = `jlv
-
-Usage:
-	jlv [options] <path>
-
-Options:
-	-s <selector>, --selector=<selector> JSON path to grouping field.
-	-f <format>, --format=<format>       Format of output.
-	`
-)
