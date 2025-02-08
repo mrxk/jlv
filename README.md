@@ -3,15 +3,14 @@
 ## Overview
 
 The JSON log viewer is a [bubbletea](https://github.com/charmbracelet/bubbletea)
-TUI that helps explore logs made up of a series of newline delimited JSON
-objects. It allows a user to specify a `selector` which is the path to a field
-in the objects. Objects without that field are hidden. The unique values of the
-field in the objects will be used to populate the list.  When a value in the
-list is selected, only ojects with that value for the selected field will be
-displayed.  The user can also specify a format which will be used to select
-values from each object to display.  By default, all objects are selected and
-pretty printed. The equivalent `jq` command line is shown at the bottom of the
-screen.
+TUI that helps explore logs made up of a series of JSON objects. It allows a
+user to specify a `selector` which is the path to a field in the objects.
+Objects without that field are hidden. The unique values of the field in the
+objects will be used to populate the list.  When a value in the list is
+selected, only ojects with that value for the selected field will be displayed.
+The user can also specify a format which will be used to select values from each
+object to display.  By default, all objects are selected and pretty printed. The
+equivalent `jq` command line is shown at the bottom of the screen.
 
 <img width="1200" alt="A demo of the jlv application" src="screenshot.png">
 
