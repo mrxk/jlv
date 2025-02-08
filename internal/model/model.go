@@ -12,7 +12,6 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/davecgh/go-spew/spew"
 )
 
 // Ensure that Model implements tea.Model.
@@ -76,7 +75,6 @@ func (m *Model) Init() tea.Cmd {
 
 // Update handles messages.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	spew.Fdump(m.log, msg)
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -125,27 +123,27 @@ func (m *Model) View() string {
 	}
 	border := lipgloss.NewStyle().Border(lipgloss.NormalBorder(), true).BorderForeground(lipgloss.Color("#9ACD32"))
 	faint := border.Faint(true).BorderForeground(lipgloss.Color("#50545c"))
-	var selectorView, formatView, loggersView, outputView string
+	var selectorView, formatView, groupsView, outputView string
 	switch m.selectedIdx {
 	case 0:
 		selectorView = border.Width(m.selector.Width).Render(m.selector.View())
 		formatView = faint.Width(m.format.Width).Render(m.format.View())
-		loggersView = faint.Width(m.groups.Width()).Render(m.groups.View())
+		groupsView = faint.Width(m.groups.Width()).Render(m.groups.View())
 		outputView = faint.Width(m.output.Width).Render(m.output.View())
 	case 1:
 		selectorView = faint.Width(m.selector.Width).Render(m.selector.View())
 		formatView = border.Width(m.format.Width).Render(m.format.View())
-		loggersView = faint.Width(m.groups.Width()).Render(m.groups.View())
+		groupsView = faint.Width(m.groups.Width()).Render(m.groups.View())
 		outputView = faint.Width(m.output.Width).Render(m.output.View())
 	case 2:
 		selectorView = faint.Width(m.selector.Width).Render(m.selector.View())
 		formatView = faint.Width(m.format.Width).Render(m.format.View())
-		loggersView = border.Width(m.groups.Width()).Render(m.groups.View())
+		groupsView = border.Width(m.groups.Width()).Render(m.groups.View())
 		outputView = faint.Width(m.output.Width).Render(m.output.View())
 	case 3:
 		selectorView = faint.Width(m.selector.Width).Render(m.selector.View())
 		formatView = faint.Width(m.format.Width).Render(m.format.View())
-		loggersView = faint.Width(m.groups.Width()).Render(m.groups.View())
+		groupsView = faint.Width(m.groups.Width()).Render(m.groups.View())
 		outputView = border.Width(m.output.Width).Render(m.output.View())
 	}
 	return strings.Join(
@@ -155,7 +153,7 @@ func (m *Model) View() string {
 				selectorView,
 				formatView,
 				lipgloss.JoinHorizontal(lipgloss.Top,
-					loggersView,
+					groupsView,
 					outputView,
 				),
 				m.footerView(),
@@ -256,6 +254,18 @@ func (m *Model) handleGlobalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 			return newModel, cmd, true
 		}
 		return m, cmd, false
+	case "G":
+		if m.selectedIdx == 3 {
+			m.output.GotoBottom()
+			return m, cmd, true
+		}
+		return m, cmd, false
+	case "g":
+		if m.selectedIdx == 3 {
+			m.output.GotoTop()
+			return m, cmd, true
+		}
+		return m, cmd, false
 	}
 	return m, cmd, false
 }
@@ -265,10 +275,13 @@ func (m *Model) handleGlobalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 // "*" is passed as the group to loadContent.
 func (m *Model) handleGroupsContent(msg groupsContent) (tea.Model, tea.Cmd) {
 	cmd := m.groups.SetItems(msg.items)
+	// Handle the page indicator if more than one page is present
+	if m.groups.Paginator.TotalPages > 1 {
+		m.groups.SetHeight(m.height - 11)
+	}
 	selectedItem := m.groups.SelectedItem()
 	selectedItemText := "*"
 	if selectedItem != nil {
-		spew.Fdump(m.log, m.groups.Index())
 		selectedItemText = selectedItem.FilterValue()
 	}
 	return m, tea.Batch(loadContent(m.selector.Value(), selectedItemText, m.format.Value(), m.path), cmd)
@@ -330,11 +343,11 @@ func (m *Model) handleFormatMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	selectedItem := m.groups.SelectedItem()
-	if selectedItem == nil {
-		m.output.SetContent("")
-		return m, cmd
+	selectedItemText := "*"
+	if selectedItem != nil {
+		selectedItemText = selectedItem.FilterValue()
 	}
-	return m, tea.Batch(loadContent(m.selector.Value(), selectedItem.FilterValue(), newValue, m.path), cmd)
+	return m, tea.Batch(loadContent(m.selector.Value(), selectedItemText, newValue, m.path), cmd)
 }
 
 // handleGroupsMessage handles messages sent to the groups list window. If the
@@ -345,8 +358,15 @@ func (m *Model) handleGroupsMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 	origValue := m.groups.SelectedItem()
 	m.groups, cmd = m.groups.Update(msg)
 	newValue := m.groups.SelectedItem()
+	if origValue == newValue {
+		return m, cmd
+	}
+	selectedItemText := "*"
+	if newValue != nil {
+		selectedItemText = newValue.FilterValue()
+	}
 	if origValue != newValue {
-		return m, tea.Batch(loadContent(m.selector.Value(), newValue.FilterValue(), m.format.Value(), m.path), cmd)
+		return m, tea.Batch(loadContent(m.selector.Value(), selectedItemText, m.format.Value(), m.path), cmd)
 	}
 	return m, cmd
 }
