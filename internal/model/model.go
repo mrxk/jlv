@@ -17,6 +17,17 @@ import (
 // Ensure that Model implements tea.Model.
 var _ tea.Model = (*Model)(nil)
 
+// selectedWindowIndex indicates which window has focus.
+type selectedWindowIndex int
+
+// Possible selected window indexes.
+const (
+	selectorWindow selectedWindowIndex = iota
+	formatWindow
+	groupsWindow
+	outputWindow
+)
+
 // Model holds the state of the application.
 type Model struct {
 	groups      list.Model
@@ -24,7 +35,7 @@ type Model struct {
 	output      viewport.Model
 	selector    textinput.Model
 	format      textinput.Model
-	selectedIdx int
+	selectedIdx selectedWindowIndex
 	path        string
 	jq          string
 	log         io.Writer
@@ -97,13 +108,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleOutputMessage(msg)
 	}
 	switch m.selectedIdx {
-	case 0:
+	case selectorWindow:
 		return m.handleSelectorMessage(msg)
-	case 1:
+	case formatWindow:
 		return m.handleFormatMessage(msg)
-	case 2:
+	case groupsWindow:
 		return m.handleGroupsMessage(msg)
-	case 3:
+	case outputWindow:
 		return m.handleOutputMessage(msg)
 	}
 	return m, cmd
@@ -125,22 +136,22 @@ func (m *Model) View() string {
 	faint := border.Faint(true).BorderForeground(lipgloss.Color("#50545c"))
 	var selectorView, formatView, groupsView, outputView string
 	switch m.selectedIdx {
-	case 0:
+	case selectorWindow:
 		selectorView = border.Width(m.selector.Width).Render(m.selector.View())
 		formatView = faint.Width(m.format.Width).Render(m.format.View())
 		groupsView = faint.Width(m.groups.Width()).Render(m.groups.View())
 		outputView = faint.Width(m.output.Width).Render(m.output.View())
-	case 1:
+	case formatWindow:
 		selectorView = faint.Width(m.selector.Width).Render(m.selector.View())
 		formatView = border.Width(m.format.Width).Render(m.format.View())
 		groupsView = faint.Width(m.groups.Width()).Render(m.groups.View())
 		outputView = faint.Width(m.output.Width).Render(m.output.View())
-	case 2:
+	case groupsWindow:
 		selectorView = faint.Width(m.selector.Width).Render(m.selector.View())
 		formatView = faint.Width(m.format.Width).Render(m.format.View())
 		groupsView = border.Width(m.groups.Width()).Render(m.groups.View())
 		outputView = faint.Width(m.output.Width).Render(m.output.View())
-	case 3:
+	case outputWindow:
 		selectorView = faint.Width(m.selector.Width).Render(m.selector.View())
 		formatView = faint.Width(m.format.Width).Render(m.format.View())
 		groupsView = faint.Width(m.groups.Width()).Render(m.groups.View())
@@ -199,16 +210,16 @@ func (m *Model) handleGlobalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 			return m, cmd, false
 		}
 		switch m.selectedIdx {
-		case 0:
+		case selectorWindow:
 			m.selectedIdx = 1
 			m.format.Blur()
 			cmd = m.format.Focus()
-		case 1:
+		case formatWindow:
 			m.selectedIdx = 2
 			m.selector.Blur()
-		case 2:
+		case groupsWindow:
 			m.selectedIdx = 3
-		case 3:
+		case outputWindow:
 			m.selectedIdx = 0
 			cmd = m.selector.Focus()
 		}
@@ -218,17 +229,17 @@ func (m *Model) handleGlobalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 			return m, cmd, false
 		}
 		switch m.selectedIdx {
-		case 0:
+		case selectorWindow:
 			m.selectedIdx = 3
 			m.selector.Blur()
-		case 1:
+		case formatWindow:
 			m.selectedIdx = 0
 			m.format.Blur()
 			cmd = m.selector.Focus()
-		case 2:
+		case groupsWindow:
 			m.selectedIdx = 1
 			cmd = m.format.Focus()
-		case 3:
+		case outputWindow:
 			m.selectedIdx = 2
 		}
 		return m, cmd, true
@@ -238,30 +249,34 @@ func (m *Model) handleGlobalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 			newModel, cmd := m.handleWindowSize(tea.WindowSizeMsg{Height: m.height, Width: m.width})
 			return newModel, cmd, true
 		}
+		if m.selectedIdx == groupsWindow && m.groups.FilterState() == list.Filtering {
+			m.groups, cmd = m.groups.Update(msg)
+			return m, cmd, true
+		}
 		cmd = tea.Quit
 		return m, cmd, true
 	case "f":
-		if m.selectedIdx == 3 {
+		if m.selectedIdx == outputWindow {
 			m.zoomed = !m.zoomed
 			newModel, cmd := m.handleWindowSize(tea.WindowSizeMsg{Height: m.height, Width: m.width})
 			return newModel, cmd, true
 		}
 		return m, cmd, false
 	case "w":
-		if m.selectedIdx == 3 {
+		if m.selectedIdx == outputWindow {
 			m.wrapped = !m.wrapped
 			newModel, cmd := m.handleWindowSize(tea.WindowSizeMsg{Height: m.height, Width: m.width})
 			return newModel, cmd, true
 		}
 		return m, cmd, false
 	case "G":
-		if m.selectedIdx == 3 {
+		if m.selectedIdx == outputWindow {
 			m.output.GotoBottom()
 			return m, cmd, true
 		}
 		return m, cmd, false
 	case "g":
-		if m.selectedIdx == 3 {
+		if m.selectedIdx == outputWindow {
 			m.output.GotoTop()
 			return m, cmd, true
 		}
