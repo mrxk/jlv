@@ -2,8 +2,8 @@ package model
 
 import (
 	"fmt"
-	"io"
-	"os"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/cursor"
@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mrxk/jlv/internal/processor"
 )
 
 // Ensure that Model implements tea.Model.
@@ -30,64 +31,92 @@ const (
 
 // Model holds the state of the application.
 type Model struct {
-	groups      list.Model
-	content     string
-	output      viewport.Model
-	selector    textinput.Model
-	format      textinput.Model
-	selectedIdx selectedWindowIndex
-	path        string
-	jq          string
-	log         io.Writer
-	zoomed      bool
-	wrapped     bool
-	width       int
-	height      int
+	selectorModel    textinput.Model
+	formatModel      textinput.Model
+	groupsModel      list.Model
+	outputModel      viewport.Model
+	selectedWindow   selectedWindowIndex
+	groups           map[string]struct{}
+	outputContent    []string
+	path             string
+	jq               string
+	zoomed           bool
+	wrapped          bool
+	lineNumbers      bool
+	width            int
+	height           int
+	following        bool
+	atBottom         bool
+	processorCmdChan chan<- processor.Command
 }
 
 // ModelOpts defines the options that can be set on a Model.
 type ModelOpts struct {
 	Selector string
-	Format   string
+	Output   string
 	Path     string
+	Follow   bool
 }
 
 // NewModel returns a new Model configured with the given ModelOpts.
 func NewModel(opts ModelOpts) *Model {
 	m := &Model{}
-	m.log, _ = os.OpenFile("messages.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-	m.selector = textinput.New()
-	m.selector.Prompt = "Group by path> "
-	m.selector.Cursor.SetMode(cursor.CursorStatic)
-	m.selector.SetValue(opts.Selector)
-	m.format = textinput.New()
-	m.format.Prompt = "Output format> "
-	m.format.Cursor.SetMode(cursor.CursorStatic)
-	m.format.SetValue(opts.Format)
-	m.path = opts.Path
+	m.selectorModel = textinput.New()
+	m.selectorModel.Prompt = "Group by path> "
+	m.selectorModel.Cursor.SetMode(cursor.CursorStatic)
+	m.selectorModel.SetValue(opts.Selector)
+	m.formatModel = textinput.New()
+	m.formatModel.Prompt = "Output format> "
+	m.formatModel.Cursor.SetMode(cursor.CursorStatic)
+	m.formatModel.SetValue(opts.Output)
 	delegate := list.NewDefaultDelegate()
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0) // compact lists
-	m.groups = list.New([]list.Item{}, delegate, 10, 20)
-	m.groups.Title = "groups"
-	m.groups.SetShowHelp(false)
-	m.groups.SetShowTitle(false)
-	m.groups.SetShowStatusBar(false)
-	m.output = viewport.New(0, 0)
+	m.groupsModel = list.New([]list.Item{}, delegate, 10, 20)
+	m.groupsModel.Title = "groups"
+	m.groupsModel.SetShowHelp(false)
+	m.groupsModel.SetShowTitle(false)
+	m.groupsModel.SetShowStatusBar(false)
+	m.outputModel = viewport.New(0, 0)
+	m.path = opts.Path
+	m.following = opts.Follow
+	m.groups = map[string]struct{}{}
+	m.groups["*"] = struct{}{}
 	return m
 }
 
 // Init initializes the application. It focuses on the selector element and
 // returns a command that populates the groups list from any values specified in
-// ModelOpts at NewModel time.
+// ModelOpts at NewModel time. Technically, handleProcessorGroupsStart could be
+// called directly.
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(loadGroups(m.selector.Value(), m.path), m.selector.Focus())
+	return tea.Batch(
+		func() tea.Msg { return processor.GroupsStart{} },
+		m.selectorModel.Focus())
 }
 
 // Update handles messages.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
+	case processor.CommandChannel:
+		return m.handleCommandChannel(msg)
+	case processor.ContentStart:
+		return m.handleProcessorContentStart(msg)
+	case processor.ContentError:
+		return m.handleProcessorContentError(msg)
+	case processor.ContentLine:
+		return m.handleProcessorContentLine(msg)
+	case processor.GroupsStart:
+		return m.handleProcessorGroupsStart(msg)
+	case processor.GroupError:
+		return m.handleProcessorGroupError(msg)
+	case processor.GroupLine:
+		return m.handleProcessorGroupLine(msg)
+	case processor.Stopped:
+		return m, tea.Quit
+	case processor.JQCommand:
+		return m.handleProcessorJQCommand(msg)
 	case tea.WindowSizeMsg:
 		return m.handleWindowSize(msg)
 	case tea.KeyMsg:
@@ -95,19 +124,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if handled {
 			return newModel, cmd
 		}
-	case groupsContent:
-		return m.handleGroupsContent(msg)
-	case groupsError:
-		return m.handleGroupsError(msg)
-	case outputContent:
-		return m.handleOutputContent(msg)
-	case outputError:
-		return m.handleOutputError(msg)
 	}
 	if m.zoomed {
 		return m.handleOutputMessage(msg)
 	}
-	switch m.selectedIdx {
+	switch m.selectedWindow {
 	case selectorWindow:
 		return m.handleSelectorMessage(msg)
 	case formatWindow:
@@ -128,34 +149,34 @@ func (m *Model) View() string {
 	if m.zoomed {
 		border := lipgloss.NewStyle().Border(lipgloss.NormalBorder(), false, false, true).BorderForeground(lipgloss.Color("#9ACD32"))
 		return lipgloss.JoinVertical(lipgloss.Top,
-			border.Render(m.output.View()),
+			border.Render(m.outputModel.View()),
 			m.footerView(),
 		)
 	}
 	border := lipgloss.NewStyle().Border(lipgloss.NormalBorder(), true).BorderForeground(lipgloss.Color("#9ACD32"))
 	faint := border.Faint(true).BorderForeground(lipgloss.Color("#50545c"))
 	var selectorView, formatView, groupsView, outputView string
-	switch m.selectedIdx {
+	switch m.selectedWindow {
 	case selectorWindow:
-		selectorView = border.Width(m.selector.Width).Render(m.selector.View())
-		formatView = faint.Width(m.format.Width).Render(m.format.View())
-		groupsView = faint.Width(m.groups.Width()).Render(m.groups.View())
-		outputView = faint.Width(m.output.Width).Render(m.output.View())
+		selectorView = border.Width(m.selectorModel.Width).Render(m.selectorModel.View())
+		formatView = faint.Width(m.formatModel.Width).Render(m.formatModel.View())
+		groupsView = faint.Width(m.groupsModel.Width()).Render(m.groupsModel.View())
+		outputView = faint.Width(m.outputModel.Width).Render(m.outputModel.View())
 	case formatWindow:
-		selectorView = faint.Width(m.selector.Width).Render(m.selector.View())
-		formatView = border.Width(m.format.Width).Render(m.format.View())
-		groupsView = faint.Width(m.groups.Width()).Render(m.groups.View())
-		outputView = faint.Width(m.output.Width).Render(m.output.View())
+		selectorView = faint.Width(m.selectorModel.Width).Render(m.selectorModel.View())
+		formatView = border.Width(m.formatModel.Width).Render(m.formatModel.View())
+		groupsView = faint.Width(m.groupsModel.Width()).Render(m.groupsModel.View())
+		outputView = faint.Width(m.outputModel.Width).Render(m.outputModel.View())
 	case groupsWindow:
-		selectorView = faint.Width(m.selector.Width).Render(m.selector.View())
-		formatView = faint.Width(m.format.Width).Render(m.format.View())
-		groupsView = border.Width(m.groups.Width()).Render(m.groups.View())
-		outputView = faint.Width(m.output.Width).Render(m.output.View())
+		selectorView = faint.Width(m.selectorModel.Width).Render(m.selectorModel.View())
+		formatView = faint.Width(m.formatModel.Width).Render(m.formatModel.View())
+		groupsView = border.Width(m.groupsModel.Width()).Render(m.groupsModel.View())
+		outputView = faint.Width(m.outputModel.Width).Render(m.outputModel.View())
 	case outputWindow:
-		selectorView = faint.Width(m.selector.Width).Render(m.selector.View())
-		formatView = faint.Width(m.format.Width).Render(m.format.View())
-		groupsView = faint.Width(m.groups.Width()).Render(m.groups.View())
-		outputView = border.Width(m.output.Width).Render(m.output.View())
+		selectorView = faint.Width(m.selectorModel.Width).Render(m.selectorModel.View())
+		formatView = faint.Width(m.formatModel.Width).Render(m.formatModel.View())
+		groupsView = faint.Width(m.groupsModel.Width()).Render(m.groupsModel.View())
+		outputView = border.Width(m.outputModel.Width).Render(m.outputModel.View())
 	}
 	return strings.Join(
 		[]string{
@@ -172,33 +193,120 @@ func (m *Model) View() string {
 		}, "\n")
 }
 
+// handleProcessorJQCommand handles the processor.JQCommand. This message
+// conveys the jq command that would result in the output being displayed.
+func (m *Model) handleProcessorJQCommand(msg processor.JQCommand) (tea.Model, tea.Cmd) {
+	m.jq = msg.Jq
+	return m, nil
+}
+
+// handleProcessorContentStart handles the processor.ContentStart messge. This
+// message means that the processor has started new read through the watched
+// file. We clear our the content related state from the old processing.
+func (m *Model) handleProcessorContentStart(_ processor.ContentStart) (tea.Model, tea.Cmd) {
+	m.atBottom = false
+	m.outputContent = nil
+	m.outputModel.SetContent("")
+	return m, nil
+}
+
+// handleProcessorContentError handles the processor.ContentError message. This
+// message means that the processor encountered an error when trying to read
+// content from the watched file.
+func (m *Model) handleProcessorContentError(msg processor.ContentError) (tea.Model, tea.Cmd) {
+	m.jq = msg.Jq
+	cmd := m.groupsModel.SetItems([]list.Item{})
+	m.outputModel.SetContent(msg.Err.Error() + "\n" + msg.Message)
+	return m, cmd
+}
+
+// handleProcessorContentLine handles the processor.ContentLine message. This
+// message conveys a new line from the processor that should be displayed in the
+// output window. If we are currently at the bottom then stay there.
+func (m *Model) handleProcessorContentLine(msg processor.ContentLine) (tea.Model, tea.Cmd) {
+	m.outputContent = append(m.outputContent, msg.Line)
+	m.outputModel.SetContent(strings.Join(m.outputContent, "\n"))
+	if m.atBottom {
+		m.outputModel.GotoBottom()
+	}
+	return m, nil
+}
+
+// handleProcessorGroupsStart handles the processor.GroupsStart message. This
+// message means that the processor has started a new read throughthe watched
+// file for groups. We clear out our group related state from the old
+// processing.
+func (m *Model) handleProcessorGroupsStart(_ processor.GroupsStart) (tea.Model, tea.Cmd) {
+	m.atBottom = false
+	m.groups = map[string]struct{}{}
+	m.groups["*"] = struct{}{}
+	cmd := m.groupsModel.SetItems(getGroupItems(m.groups))
+	m.groupsModel.SetWidth(getGroupWidth(m.groups))
+	m.outputModel.Width = m.width - m.groupsModel.Width() - 4
+	return m, cmd
+}
+
+// handleProcessorGroupError handles the processor.GroupError message. This
+// message means that the processor encountered an error when trying to read
+// groups from the watched file.
+func (m *Model) handleProcessorGroupError(msg processor.GroupError) (tea.Model, tea.Cmd) {
+	m.jq = msg.Jq
+	m.groups = map[string]struct{}{}
+	cmd := m.groupsModel.SetItems(getGroupItems(m.groups))
+	m.outputModel.SetContent(msg.Err.Error() + "\n" + msg.Message)
+	return m, cmd
+}
+
+// handleProcessorGroupLine handles the processor.GroupLine message. This
+// message conveys a new group the processor that should be displayed in the
+// groups window.
+func (m *Model) handleProcessorGroupLine(msg processor.GroupLine) (tea.Model, tea.Cmd) {
+	m.groups[msg.Line] = struct{}{}
+	groupItems := getGroupItems(m.groups)
+	cmd := m.groupsModel.SetItems(groupItems)
+	m.groupsModel.SetWidth(getGroupWidth(m.groups))
+	m.outputModel.Width = m.width - m.groupsModel.Width() - 4
+	return m, cmd
+}
+
+// handleCommandChannel handles the processor.CommandChannel message. This
+// message conveys the channel that the processor will be listening on for
+// commands from the application.
+func (m *Model) handleCommandChannel(msg processor.CommandChannel) (tea.Model, tea.Cmd) {
+	m.processorCmdChan = msg.CmdChan
+	return m, nil
+}
+
 // handleWindowSize handles window size messages. It resizes all elements based
-// on the new size and whether the output window is zoomed or not. It also
-// re-sets the content in the output window because we must handle wrapping
-// ourselves (https://github.com/charmbracelet/bubbletea/issues/1017).
+// on the new size and whether the output window is zoomed or not.
 func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.width = msg.Width
 	m.height = msg.Height
-	m.selector.Width = m.width - 2
-	m.format.Width = m.width - 2
-	m.groups.SetWidth(40)
-	m.groups.SetHeight(m.height - 10)
+	m.selectorModel.Width = m.width - 2
+	m.formatModel.Width = m.width - 2
+	m.groupsModel.SetHeight(m.height - 10)
 	if m.zoomed {
-		m.output.Height = m.height - 2
-		m.output.Width = m.width
+		m.outputModel.Height = m.height - 2
+		m.outputModel.Width = m.width
 	} else {
-		m.output.Width = m.width - 40 - 4
-		m.output.Height = m.height - 10
+		m.outputModel.Width = m.width - m.groupsModel.Width() - 4
+		m.outputModel.Height = m.height - 10
 	}
-	selectedItem := m.groups.SelectedItem()
+	selectedItem := m.groupsModel.SelectedItem()
 	selectedItemText := "*"
 	if selectedItem != nil {
 		selectedItemText = selectedItem.FilterValue()
 	}
-	if m.wrapped {
-		return m, loadWrappedContent(m.selector.Value(), selectedItemText, m.format.Value(), fmt.Sprintf("%d", m.output.Width), m.path)
+	m.processorCmdChan <- processor.Command{
+		Selector:   m.selectorModel.Value(),
+		Format:     m.formatModel.Value(),
+		Group:      selectedItemText,
+		Path:       m.path,
+		Width:      m.outputModel.Width,
+		Wrap:       m.wrapped,
+		LineNumber: m.lineNumbers,
 	}
-	return m, loadContent(m.selector.Value(), selectedItemText, m.format.Value(), fmt.Sprintf("%d", m.output.Width), m.path)
+	return m, nil
 }
 
 // handleGlobalKey handles global key presses. If the key is handled then a new
@@ -206,9 +314,12 @@ func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 // then false is returned and the caller must pass the message to the focused
 // component.
 // * tab and shift-tab cycle focus
-// * escape exits the application
+// * escape backs out of a form or exits the application
 // * f, when the output window has focus, toggles fullscreen
 // * w, when the output window has focus, toggles wrapped
+// * l, when the output window has focus, toggles line numbers
+// * g, when the output window has focus, goes to the top
+// * G, when the output window has focus, goes to the bottom
 func (m *Model) handleGlobalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 	var cmd tea.Cmd
 	switch msg.String() {
@@ -216,38 +327,38 @@ func (m *Model) handleGlobalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		if m.zoomed {
 			return m, cmd, false
 		}
-		switch m.selectedIdx {
+		switch m.selectedWindow {
 		case selectorWindow:
-			m.selectedIdx = 1
-			m.format.Blur()
-			cmd = m.format.Focus()
+			m.selectedWindow = 1
+			m.formatModel.Blur()
+			cmd = m.formatModel.Focus()
 		case formatWindow:
-			m.selectedIdx = 2
-			m.selector.Blur()
+			m.selectedWindow = 2
+			m.selectorModel.Blur()
 		case groupsWindow:
-			m.selectedIdx = 3
+			m.selectedWindow = 3
 		case outputWindow:
-			m.selectedIdx = 0
-			cmd = m.selector.Focus()
+			m.selectedWindow = 0
+			cmd = m.selectorModel.Focus()
 		}
 		return m, cmd, true
 	case "shift+tab":
 		if m.zoomed {
 			return m, cmd, false
 		}
-		switch m.selectedIdx {
+		switch m.selectedWindow {
 		case selectorWindow:
-			m.selectedIdx = 3
-			m.selector.Blur()
+			m.selectedWindow = 3
+			m.selectorModel.Blur()
 		case formatWindow:
-			m.selectedIdx = 0
-			m.format.Blur()
-			cmd = m.selector.Focus()
+			m.selectedWindow = 0
+			m.formatModel.Blur()
+			cmd = m.selectorModel.Focus()
 		case groupsWindow:
-			m.selectedIdx = 1
-			cmd = m.format.Focus()
+			m.selectedWindow = 1
+			cmd = m.formatModel.Focus()
 		case outputWindow:
-			m.selectedIdx = 2
+			m.selectedWindow = 2
 		}
 		return m, cmd, true
 	case "esc":
@@ -256,35 +367,45 @@ func (m *Model) handleGlobalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 			newModel, cmd := m.handleWindowSize(tea.WindowSizeMsg{Height: m.height, Width: m.width})
 			return newModel, cmd, true
 		}
-		if m.selectedIdx == groupsWindow && m.groups.FilterState() == list.Filtering {
-			m.groups, cmd = m.groups.Update(msg)
+		if m.selectedWindow == groupsWindow && m.groupsModel.FilterState() == list.Filtering {
+			m.groupsModel, cmd = m.groupsModel.Update(msg)
 			return m, cmd, true
 		}
-		cmd = tea.Quit
+		m.processorCmdChan <- processor.Command{
+			Operation: processor.StopOperation,
+		}
 		return m, cmd, true
 	case "f":
-		if m.selectedIdx == outputWindow {
+		if m.selectedWindow == outputWindow {
 			m.zoomed = !m.zoomed
 			newModel, cmd := m.handleWindowSize(tea.WindowSizeMsg{Height: m.height, Width: m.width})
 			return newModel, cmd, true
 		}
 		return m, cmd, false
 	case "w":
-		if m.selectedIdx == outputWindow {
+		if m.selectedWindow == outputWindow {
 			m.wrapped = !m.wrapped
 			newModel, cmd := m.handleWindowSize(tea.WindowSizeMsg{Height: m.height, Width: m.width})
 			return newModel, cmd, true
 		}
 		return m, cmd, false
+	case "l":
+		if m.selectedWindow == outputWindow {
+			m.lineNumbers = !m.lineNumbers
+			newModel, cmd := m.handleWindowSize(tea.WindowSizeMsg{Height: m.height, Width: m.width})
+			return newModel, cmd, true
+		}
+		return m, cmd, false
 	case "G":
-		if m.selectedIdx == outputWindow {
-			m.output.GotoBottom()
+		if m.selectedWindow == outputWindow {
+			m.outputModel.GotoBottom()
+			m.atBottom = true
 			return m, cmd, true
 		}
 		return m, cmd, false
 	case "g":
-		if m.selectedIdx == outputWindow {
-			m.output.GotoTop()
+		if m.selectedWindow == outputWindow {
+			m.outputModel.GotoTop()
 			return m, cmd, true
 		}
 		return m, cmd, false
@@ -292,99 +413,66 @@ func (m *Model) handleGlobalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 	return m, cmd, false
 }
 
-// handleGroupsContent handles the groupsContent message. It sets the group list
-// content and issues a loadContent command. If there is no item selected then
-// "*" is passed as the group to loadContent.
-func (m *Model) handleGroupsContent(msg groupsContent) (tea.Model, tea.Cmd) {
-	cmd := m.groups.SetItems(msg.items)
-	// Handle the page indicator if more than one page is present
-	if m.groups.Paginator.TotalPages > 1 {
-		m.groups.SetHeight(m.height - 11)
+// handleSelectorMessage handles messages sent to the selector window. If the
+// value of the selector changed based on the message, then a command is sent to
+// the processor to re-start watching the file for groups.
+func (m *Model) handleSelectorMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	origValue := m.selectorModel.Value()
+	m.selectorModel, cmd = m.selectorModel.Update(msg)
+	newValue := m.selectorModel.Value()
+	if origValue == newValue {
+		return m, cmd
 	}
-	selectedItem := m.groups.SelectedItem()
-	selectedItemText := "*"
-	if selectedItem != nil {
-		selectedItemText = selectedItem.FilterValue()
+	// A selector that ends in a '.' is never valid.
+	if len(newValue) > 1 && strings.HasSuffix(newValue, ".") {
+		return m, cmd
 	}
-	if m.wrapped {
-		return m, tea.Batch(loadWrappedContent(m.selector.Value(), selectedItemText, m.format.Value(), fmt.Sprintf("%d", m.output.Width), m.path), cmd)
+	m.processorCmdChan <- processor.Command{
+		Operation: processor.StartGroupsOperation,
+		Selector:  m.selectorModel.Value(),
+		Path:      m.path,
 	}
-	return m, tea.Batch(loadContent(m.selector.Value(), selectedItemText, m.format.Value(), fmt.Sprintf("%d", m.output.Width), m.path), cmd)
-}
-
-// handleGroupsError handles the groupsError message. It clears the list of
-// groups, sets the jq command in the model, and sets the output window to
-// display the error.
-func (m *Model) handleGroupsError(msg groupsError) (tea.Model, tea.Cmd) {
-	cmd := m.groups.SetItems([]list.Item{})
-	m.jq = msg.jq
-	m.output.SetContent(msg.err.Error() + "\n" + msg.message)
 	return m, cmd
 }
 
-// handleOutputContent handles the outputContent message. It saves the jq
-// command and the original content. It then sets the output window to the
-// wrapped version of that content.  We have to handle wrapping ourselves
-// (https://github.com/charmbracelet/bubbletea/issues/1017).
-func (m *Model) handleOutputContent(msg outputContent) (tea.Model, tea.Cmd) {
-	m.jq = msg.jq
-	m.output.SetContent(msg.content)
-	return m, nil
-}
-
-// handleOutputError handles the outputError message. It sets the jq command in
-// the model and sets the output window to display the error.
-func (m *Model) handleOutputError(msg outputError) (tea.Model, tea.Cmd) {
-	m.jq = msg.jq
-	m.output.SetContent(msg.err.Error() + "\n" + msg.message)
-	return m, nil
-}
-
-// handleSelectorMessage handles messages sent to the selector window. If the
-// selector value changed based on the message, then a loadGroups command is
-// returned.
-func (m *Model) handleSelectorMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-	origValue := m.selector.Value()
-	m.selector, cmd = m.selector.Update(msg)
-	newValue := m.selector.Value()
-	if origValue == newValue {
-		return m, cmd
-	}
-	return m, tea.Batch(loadGroups(newValue, m.path), cmd)
-}
-
-// handleFormatMessage handles messages sent to the format window. If the format
-// value changed based on the message then a check is made to see if a an item
-// is selected in the list. If no item is selected then the output window is
-// cleared. If an item is selected then a loadContent command is returned.
+// handleFormatMessage handles messages sent to the format window. If the value
+// of the format changed based on the message, then a comnmand is sent to the
+// processor to re-start watching the file for content.
 func (m *Model) handleFormatMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
-	origValue := m.format.Value()
-	m.format, cmd = m.format.Update(msg)
-	newValue := m.format.Value()
+	origValue := m.formatModel.Value()
+	m.formatModel, cmd = m.formatModel.Update(msg)
+	newValue := m.formatModel.Value()
 	if origValue == newValue {
 		return m, cmd
 	}
-	selectedItem := m.groups.SelectedItem()
+	selectedItem := m.groupsModel.SelectedItem()
 	selectedItemText := "*"
 	if selectedItem != nil {
 		selectedItemText = selectedItem.FilterValue()
 	}
-	if m.wrapped {
-		return m, tea.Batch(loadWrappedContent(m.selector.Value(), selectedItemText, newValue, fmt.Sprintf("%d", m.output.Width), m.path), cmd)
+	m.processorCmdChan <- processor.Command{
+		Operation:  processor.StartContentOperation,
+		Selector:   m.selectorModel.Value(),
+		Format:     m.formatModel.Value(),
+		Group:      selectedItemText,
+		Path:       m.path,
+		Width:      m.outputModel.Width,
+		Wrap:       m.wrapped,
+		LineNumber: m.lineNumbers,
 	}
-	return m, tea.Batch(loadContent(m.selector.Value(), selectedItemText, newValue, fmt.Sprintf("%d", m.output.Width), m.path), cmd)
+	return m, cmd
 }
 
 // handleGroupsMessage handles messages sent to the groups list window. If the
-// value of the list changed based on the message then a loadContent message is
-// returned.
+// value of the list changed based on the message, then a comnmand is sent to
+// the processor to re-start watching the file for content.
 func (m *Model) handleGroupsMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
-	origValue := m.groups.SelectedItem()
-	m.groups, cmd = m.groups.Update(msg)
-	newValue := m.groups.SelectedItem()
+	origValue := m.groupsModel.SelectedItem()
+	m.groupsModel, cmd = m.groupsModel.Update(msg)
+	newValue := m.groupsModel.SelectedItem()
 	if origValue == newValue {
 		return m, cmd
 	}
@@ -392,20 +480,26 @@ func (m *Model) handleGroupsMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if newValue != nil {
 		selectedItemText = newValue.FilterValue()
 	}
-	if origValue != newValue {
-		if m.wrapped {
-			return m, tea.Batch(loadWrappedContent(m.selector.Value(), selectedItemText, m.format.Value(), fmt.Sprintf("%d", m.output.Width), m.path), cmd)
-		}
-		return m, tea.Batch(loadContent(m.selector.Value(), selectedItemText, m.format.Value(), fmt.Sprintf("%d", m.output.Width), m.path), cmd)
+	m.processorCmdChan <- processor.Command{
+		Operation:  processor.StartContentOperation,
+		Selector:   m.selectorModel.Value(),
+		Format:     m.formatModel.Value(),
+		Group:      selectedItemText,
+		Path:       m.path,
+		Width:      m.outputModel.Width,
+		Wrap:       m.wrapped,
+		LineNumber: m.lineNumbers,
 	}
 	return m, cmd
 }
 
-// hadleOutputMessage handles messages sent to the output window. Currently the
-// message is passed to the output window and no other action is taken.
+// hadleOutputMessage handles messages sent to the output window. If the message
+// put us at the bottom of the window then we remember that we are at the bottom
+// so we can stay there as new lines are added.
 func (m *Model) handleOutputMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
-	m.output, cmd = m.output.Update(msg)
+	m.outputModel, cmd = m.outputModel.Update(msg)
+	m.atBottom = (m.outputModel.ScrollPercent() == 1.0)
 	return m, cmd
 }
 
@@ -413,10 +507,35 @@ func (m *Model) handleOutputMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 // and the current scroll percentage of the output window with enough space
 // between them to put the percentage at the right of the screen.
 func (m *Model) footerView() string {
-	scrollPercent := fmt.Sprintf("%3.f%%", m.output.ScrollPercent()*100)
-	spaceCount := m.selector.Width - len(m.jq) - len(scrollPercent)
+	scrollPercent := fmt.Sprintf("%3.f%%", m.outputModel.ScrollPercent()*100)
+	spaceCount := m.selectorModel.Width - len(m.jq) - len(scrollPercent)
 	if spaceCount < 0 {
 		return ""
 	}
 	return fmt.Sprintf(" %s%s%s", m.jq, strings.Repeat(" ", spaceCount), scrollPercent)
+}
+
+// getGroupItems returns the groups represented by the groups map as a slice of
+// list.Item.
+func getGroupItems(groups map[string]struct{}) []list.Item {
+	var items []list.Item
+	for _, k := range slices.Sorted(maps.Keys(groups)) {
+		items = append(items, item(k))
+	}
+	return items
+}
+
+func getGroupWidth(items map[string]struct{}) int {
+	minWidth := 10
+	maxWidth := 100
+	width := 0
+	for i := range maps.Keys(items) {
+		width = max(width, len(i))
+	}
+	if width < minWidth {
+		width = minWidth
+	} else if width > maxWidth {
+		width = maxWidth
+	}
+	return width + 3
 }
