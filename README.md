@@ -11,6 +11,10 @@ selected, only ojects with that value for the selected field will be displayed.
 The user can also specify an `output` format which will be used to select values
 from each object to display.  By default, all objects are selected and pretty
 printed. The equivalent `jq` command line is shown at the bottom of the screen.
+The file is watched for changes and new lines are appended to the end of the
+output window. If the window is scrolled to the bottom when new lines arrive
+then the window will be scrolled to remain at the bottom. Otherwise, the new
+lines will be appended off screen.
 
 <img width="1200" alt="A demo of the jlv application" src="screenshot.png">
 
@@ -22,19 +26,22 @@ go install github.com/mrxk/jlv@latest
 
 ## Requirements
 
+* tail
 * [jq](https://jqlang.org/)
 
 ## Usage
 
 ```
-jlv
+JSON log viewer: jlv
 
 Usage:
-        jlv [options] <path>
+	jlv [options] <path>
 
 Options:
-        -s <selector>, --selector=<selector> JSON path to grouping field.
-        -o <format>, --output=<format>       Format of output.
+	-s <selector>, --selector=<selector> JSON path to grouping field.
+	-o <format>, --output=<format>       Format of output.
+	-l, --linenumbers                    Show line numbers.
+	-w, --wrap                           Wrap output.
 ```
 
 ## Key bindings
@@ -45,7 +52,7 @@ Options:
 * `tab`: change focus to the next TUI element
 * `shift-tab`: change focus to the previous TUI element
 
-### List window
+### Group list window
 
 * `/`: fliter the list
 * `down`: select the next item
@@ -59,6 +66,7 @@ Options:
 
 * `f`: toggle between full-screen and windowed view
 * `w`: toggle between wrapped and truncated view
+* `l`: toggle line numbers
 * `G`: scroll to the bottom
 * `g`: scroll to the top
 * `down`: scroll down
