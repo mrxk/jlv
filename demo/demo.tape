@@ -56,6 +56,8 @@ Type "f"
 Sleep 5000ms
 Type "w"
 Sleep 5000ms
+Type "l"
+Sleep 5000ms
 Type "f"
 Sleep 5000ms
 Tab
