@@ -17,7 +17,7 @@ Usage:
 
 Options:
 	-s <selector>, --selector=<selector> JSON path to grouping field.
-	-f <format>, --format=<format>       Format of output.
+	-o <format>, --output=<format>       Format of output.
 	`
 )
 
@@ -29,8 +29,8 @@ func parseArgs(usage string) (model.ModelOpts, error) {
 	if err != nil {
 		return opts, err
 	}
-	opts.Format, _ = docOpts.String("--format")
 	opts.Selector, _ = docOpts.String("--selector")
+	opts.Format, _ = docOpts.String("--output")
 	opts.Path, _ = docOpts.String("<path>")
 	return opts, nil
 }
