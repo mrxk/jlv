@@ -1,9 +1,10 @@
-Output demo.gif
+Require ./jlv
+Output ./demo/demo.gif
 Set Width 1200
 Set Height 600
 Set FontSize 12
 Set Shell zsh
-Type "./jlv ./example.json"
+Type "./jlv ./demo/example.json"
 Sleep 3000ms
 Enter
 Sleep 3000ms

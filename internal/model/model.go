@@ -61,7 +61,7 @@ func NewModel(opts ModelOpts) *Model {
 	m.selector.Cursor.SetMode(cursor.CursorStatic)
 	m.selector.SetValue(opts.Selector)
 	m.format = textinput.New()
-	m.format.Prompt = "output format> "
+	m.format.Prompt = "Output format> "
 	m.format.Cursor.SetMode(cursor.CursorStatic)
 	m.format.SetValue(opts.Format)
 	m.path = opts.Path
