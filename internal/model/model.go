@@ -190,8 +190,15 @@ func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 		m.output.Width = m.width - 40 - 4
 		m.output.Height = m.height - 10
 	}
-	m.output.SetContent(m.wrapOrTrunc(m.content, m.output.Width))
-	return m, nil
+	selectedItem := m.groups.SelectedItem()
+	selectedItemText := "*"
+	if selectedItem != nil {
+		selectedItemText = selectedItem.FilterValue()
+	}
+	if m.wrapped {
+		return m, loadWrappedContent(m.selector.Value(), selectedItemText, m.format.Value(), fmt.Sprintf("%d", m.output.Width), m.path)
+	}
+	return m, loadContent(m.selector.Value(), selectedItemText, m.format.Value(), fmt.Sprintf("%d", m.output.Width), m.path)
 }
 
 // handleGlobalKey handles global key presses. If the key is handled then a new
@@ -299,7 +306,10 @@ func (m *Model) handleGroupsContent(msg groupsContent) (tea.Model, tea.Cmd) {
 	if selectedItem != nil {
 		selectedItemText = selectedItem.FilterValue()
 	}
-	return m, tea.Batch(loadContent(m.selector.Value(), selectedItemText, m.format.Value(), m.path), cmd)
+	if m.wrapped {
+		return m, tea.Batch(loadWrappedContent(m.selector.Value(), selectedItemText, m.format.Value(), fmt.Sprintf("%d", m.output.Width), m.path), cmd)
+	}
+	return m, tea.Batch(loadContent(m.selector.Value(), selectedItemText, m.format.Value(), fmt.Sprintf("%d", m.output.Width), m.path), cmd)
 }
 
 // handleGroupsError handles the groupsError message. It clears the list of
@@ -318,8 +328,7 @@ func (m *Model) handleGroupsError(msg groupsError) (tea.Model, tea.Cmd) {
 // (https://github.com/charmbracelet/bubbletea/issues/1017).
 func (m *Model) handleOutputContent(msg outputContent) (tea.Model, tea.Cmd) {
 	m.jq = msg.jq
-	m.content = msg.content
-	m.output.SetContent(m.wrapOrTrunc(msg.content, m.output.Width))
+	m.output.SetContent(msg.content)
 	return m, nil
 }
 
@@ -362,7 +371,10 @@ func (m *Model) handleFormatMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if selectedItem != nil {
 		selectedItemText = selectedItem.FilterValue()
 	}
-	return m, tea.Batch(loadContent(m.selector.Value(), selectedItemText, newValue, m.path), cmd)
+	if m.wrapped {
+		return m, tea.Batch(loadWrappedContent(m.selector.Value(), selectedItemText, newValue, fmt.Sprintf("%d", m.output.Width), m.path), cmd)
+	}
+	return m, tea.Batch(loadContent(m.selector.Value(), selectedItemText, newValue, fmt.Sprintf("%d", m.output.Width), m.path), cmd)
 }
 
 // handleGroupsMessage handles messages sent to the groups list window. If the
@@ -381,7 +393,10 @@ func (m *Model) handleGroupsMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 		selectedItemText = newValue.FilterValue()
 	}
 	if origValue != newValue {
-		return m, tea.Batch(loadContent(m.selector.Value(), selectedItemText, m.format.Value(), m.path), cmd)
+		if m.wrapped {
+			return m, tea.Batch(loadWrappedContent(m.selector.Value(), selectedItemText, m.format.Value(), fmt.Sprintf("%d", m.output.Width), m.path), cmd)
+		}
+		return m, tea.Batch(loadContent(m.selector.Value(), selectedItemText, m.format.Value(), fmt.Sprintf("%d", m.output.Width), m.path), cmd)
 	}
 	return m, cmd
 }
@@ -404,54 +419,4 @@ func (m *Model) footerView() string {
 		return ""
 	}
 	return fmt.Sprintf(" %s%s%s", m.jq, strings.Repeat(" ", spaceCount), scrollPercent)
-}
-
-// wrapOrTrunc returns the given string with either new lines inserted to wrap
-// at the given column width to wrap lines or characters that would extend
-// beyond the column width removed. We have to handle wrapping ourselves
-// (https://github.com/charmbracelet/bubbletea/issues/1017).
-func (m *Model) wrapOrTrunc(content string, width int) string {
-	if m.wrapped {
-		return wrap(content, width)
-	}
-	return trunc(content, width)
-}
-
-// wrap returns the given string with new lines inserted to wrap at the given
-// column width.  We have to handle wrapping ourselves
-// (https://github.com/charmbracelet/bubbletea/issues/1017).
-func wrap(content string, width int) string {
-	origLines := strings.Split(content, "\n")
-	newLines := make([]string, 0, len(origLines)*2)
-	for _, origLine := range origLines {
-		runes := []rune(origLine)
-		runesL := len(runes)
-		for i := 0; i < runesL; i += width {
-			max := min(runesL, i+width)
-			newLines = append(newLines, string(runes[i:max]))
-		}
-	}
-	return strings.Join(newLines, "\n")
-}
-
-// trunc returns the given string with characters that would extend beyond the
-// column width removed.
-func trunc(content string, width int) string {
-	origLines := strings.Split(content, "\n")
-	newLines := make([]string, 0, len(origLines))
-	for _, origLine := range origLines {
-		runes := []rune(origLine)
-		runesL := len(runes)
-		max := min(runesL, width)
-		newLines = append(newLines, string(runes[:max]))
-	}
-	return strings.Join(newLines, "\n")
-}
-
-// min returns the minimum of the two given integers.
-func min(x, y int) int {
-	if x < y {
-		return x
-	}
-	return y
 }

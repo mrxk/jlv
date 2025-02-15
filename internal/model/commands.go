@@ -111,14 +111,37 @@ func createContentArg(selector, group, format string) string {
 	return fmt.Sprintf(".|select(%s==\"%s\")|%s", selector, group, format)
 }
 
-// loadGroups returns a tea.Cmd that, when executed, will produce either an
-// outputError or an outputContent message.  The command creates a jq command
-// from the given args, executes that jq command, and returns the result.
-func loadContent(selector, group, format, path string) tea.Cmd {
+// loadContent returns a tea.Cmd that, when executed, will produce either an
+// outputError or an outputContent message.  The outputContent message will be
+// cut at the given width.
+func loadContent(selector, group, format, width, path string) tea.Cmd {
+	return loadFilteredContent(selector, group, format, path, "cut", "-c", "-"+width)
+}
+
+// loadWrappedContent returns a tea.Cmd that, when executed, will produce either
+// an outputError or an outputContent message.  The outputContent message will
+// be wrapped at the given width.
+func loadWrappedContent(selector, group, format, width, path string) tea.Cmd {
+	return loadFilteredContent(selector, group, format, path, "fold", "-b"+width)
+}
+
+// loadFilteredContent returns a tea.Cmd that, when executed, will produce
+// either an outputError or an outputContent message.  The command creates a jq
+// command from the given args, pipes it through the given filter command, and
+// returns the result.
+func loadFilteredContent(selector, group, format, path, filterCommand string, filterArgs ...string) tea.Cmd {
 	return func() tea.Msg {
 		arg := createContentArg(selector, group, format)
-		cmd := *exec.Command("jq", "-r", arg, path)
-		content, err := cmd.CombinedOutput()
+		jqCmd := exec.Command("jq", "-r", arg, path)
+		filterCmd := exec.Command(filterCommand, filterArgs...)
+		filterStdinPipe, _ := filterCmd.StdinPipe()
+		jqCmd.Stdout = filterStdinPipe
+		_ = jqCmd.Start()
+		go func() {
+			defer filterStdinPipe.Close()
+			_ = jqCmd.Wait()
+		}()
+		content, err := filterCmd.CombinedOutput()
 		if err != nil {
 			return outputError{
 				message: string(content),
