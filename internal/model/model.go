@@ -95,6 +95,7 @@ func NewModel(opts ModelOpts) *Model {
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(
 		func() tea.Msg { return processor.GroupsStart{} },
+		tea.SetWindowTitle("jlv "+m.path),
 		m.selectorModel.Focus())
 }
 
