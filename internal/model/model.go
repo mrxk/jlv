@@ -219,7 +219,9 @@ func (m *Model) handleProcessorContentStart(msg processor.ContentStart) (tea.Mod
 // content from the watched file.
 func (m *Model) handleProcessorContentError(msg processor.ContentError) (tea.Model, tea.Cmd) {
 	m.jq = msg.Jq
-	cmd := m.groupsModel.SetItems([]list.Item{})
+	m.groups = map[string]struct{}{}
+	m.groups["*"] = struct{}{}
+	cmd := m.groupsModel.SetItems(getGroupItems(m.groups))
 	m.outputModel.SetContent(msg.Err.Error() + "\n" + msg.Message)
 	return m, cmd
 }
@@ -260,6 +262,7 @@ func (m *Model) handleProcessorGroupsStart(msg processor.GroupsStart) (tea.Model
 func (m *Model) handleProcessorGroupError(msg processor.GroupError) (tea.Model, tea.Cmd) {
 	m.jq = msg.Jq
 	m.groups = map[string]struct{}{}
+	m.groups["*"] = struct{}{}
 	cmd := m.groupsModel.SetItems(getGroupItems(m.groups))
 	m.outputModel.SetContent(msg.Err.Error() + "\n" + msg.Message)
 	return m, cmd
