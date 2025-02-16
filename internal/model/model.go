@@ -85,6 +85,7 @@ func NewModel(opts ModelOpts) *Model {
 	m.groups["*"] = struct{}{}
 	m.lineNumbers = opts.LineNumbers
 	m.wrap = opts.Wrap
+	m.atBottom = true
 	return m
 }
 
@@ -208,7 +209,6 @@ func (m *Model) handleProcessorJQCommand(msg processor.JQCommand) (tea.Model, te
 // message means that the processor has started new read through the watched
 // file. We clear our the content related state from the old processing.
 func (m *Model) handleProcessorContentStart(msg processor.ContentStart) (tea.Model, tea.Cmd) {
-	m.atBottom = false
 	m.rawOutputContent = msg.InitialContent
 	m.updateOutputModelContent()
 	return m, nil
@@ -242,7 +242,6 @@ func (m *Model) handleProcessorContentLine(msg processor.ContentLine) (tea.Model
 // file for groups. We clear out our group related state from the old
 // processing.
 func (m *Model) handleProcessorGroupsStart(msg processor.GroupsStart) (tea.Model, tea.Cmd) {
-	m.atBottom = false
 	m.groups = map[string]struct{}{}
 	m.groups["*"] = struct{}{}
 	for _, group := range msg.InitialGroups {
