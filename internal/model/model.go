@@ -207,11 +207,10 @@ func (m *Model) handleProcessorJQCommand(msg processor.JQCommand) (tea.Model, te
 // handleProcessorContentStart handles the processor.ContentStart messge. This
 // message means that the processor has started new read through the watched
 // file. We clear our the content related state from the old processing.
-func (m *Model) handleProcessorContentStart(_ processor.ContentStart) (tea.Model, tea.Cmd) {
+func (m *Model) handleProcessorContentStart(msg processor.ContentStart) (tea.Model, tea.Cmd) {
 	m.atBottom = false
-	m.rawOutputContent = nil
-	m.outputContent = nil
-	m.outputModel.SetContent("")
+	m.rawOutputContent = msg.InitialContent
+	m.updateOutputModelContent()
 	return m, nil
 }
 
@@ -242,11 +241,16 @@ func (m *Model) handleProcessorContentLine(msg processor.ContentLine) (tea.Model
 // message means that the processor has started a new read throughthe watched
 // file for groups. We clear out our group related state from the old
 // processing.
-func (m *Model) handleProcessorGroupsStart(_ processor.GroupsStart) (tea.Model, tea.Cmd) {
+func (m *Model) handleProcessorGroupsStart(msg processor.GroupsStart) (tea.Model, tea.Cmd) {
 	m.atBottom = false
 	m.groups = map[string]struct{}{}
 	m.groups["*"] = struct{}{}
+	for _, group := range msg.InitialGroups {
+		m.groups[group] = struct{}{}
+	}
 	cmd := m.groupsModel.SetItems(getGroupItems(m.groups))
+	m.groupsModel.ResetSelected()
+	m.reloadFile()
 	m.updateGroupWidth()
 	return m, cmd
 }
@@ -494,7 +498,7 @@ func (m *Model) updateGroupWidth() {
 // (https://github.com/charmbracelet/bubbletea/issues/1017)
 func (m *Model) updateOutputModelContent() {
 	// reformat all lines
-	m.outputContent = make([]string, 0, len(m.outputContent))
+	m.outputContent = make([]string, 0, max(len(m.rawOutputContent), len(m.outputContent)))
 	for idx, line := range m.rawOutputContent {
 		m.outputContent = append(m.outputContent, formatContentLine(m.wrap, m.lineNumbers, idx+1, m.outputModel.Width, line)...)
 	}
@@ -527,6 +531,9 @@ func (m *Model) reloadGroups() {
 // connected processor. This begins the process of re-reading content from the
 // file.
 func (m *Model) reloadFile() {
+	m.outputModel.SetContent("")
+	m.rawOutputContent = nil
+	m.outputContent = nil
 	selectedItem := m.groupsModel.SelectedItem()
 	selectedItemText := "*"
 	if selectedItem != nil {
