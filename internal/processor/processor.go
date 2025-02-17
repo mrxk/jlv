@@ -335,17 +335,17 @@ func countLines(path string) (int, error) {
 		return 0, err
 	}
 	defer file.Close()
-	reader := bufio.NewReader(file)
+	buf := make([]byte, bufio.MaxScanTokenSize)
 	count := 0
 	for {
-		_, err := reader.ReadSlice('\n')
+		n, err := file.Read(buf)
+		count += bytes.Count(buf[:n], []byte{'\n'})
 		if err != nil {
 			if err == io.EOF {
 				return count, nil
 			}
-			return 0, err
+			return count, err
 		}
-		count++
 	}
 }
 
