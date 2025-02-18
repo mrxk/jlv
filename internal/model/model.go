@@ -49,6 +49,8 @@ type Model struct {
 	height           int
 	atBottom         bool
 	processorCmdChan chan<- processor.Command
+	contentStopped   bool
+	groupsStopped    bool
 }
 
 // ModelOpts defines the options that can be set on a Model.
@@ -74,28 +76,24 @@ func NewModel(opts ModelOpts) *Model {
 	delegate := list.NewDefaultDelegate()
 	delegate.ShowDescription = false
 	delegate.SetSpacing(0) // compact lists
-	m.groupsModel = list.New([]list.Item{}, delegate, 10, 20)
+	m.groups = map[string]struct{}{}
+	m.groups["*"] = struct{}{}
+	m.groupsModel = list.New(getGroupItems(m.groups), delegate, 10, 20)
 	m.groupsModel.Title = "groups"
 	m.groupsModel.SetShowHelp(false)
 	m.groupsModel.SetShowTitle(false)
 	m.groupsModel.SetShowStatusBar(false)
 	m.outputModel = viewport.New(0, 0)
 	m.path = opts.Path
-	m.groups = map[string]struct{}{}
-	m.groups["*"] = struct{}{}
 	m.lineNumbers = opts.LineNumbers
 	m.wrap = opts.Wrap
 	m.atBottom = true
 	return m
 }
 
-// Init initializes the application. It focuses on the selector element and
-// returns a command that populates the groups list from any values specified in
-// ModelOpts at NewModel time. Technically, handleProcessorGroupsStart could be
-// called directly.
+// Init initializes the application. It focuses on the selector element.
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(
-		func() tea.Msg { return processor.GroupsStart{} },
 		tea.SetWindowTitle("jlv "+m.path),
 		m.selectorModel.Focus())
 }
@@ -114,12 +112,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleProcessorContentLine(msg)
 	case processor.GroupsStart:
 		return m.handleProcessorGroupsStart(msg)
-	case processor.GroupError:
+	case processor.GroupsError:
 		return m.handleProcessorGroupError(msg)
-	case processor.GroupLine:
+	case processor.GroupsLine:
 		return m.handleProcessorGroupLine(msg)
-	case processor.Stopped:
-		return m, tea.Quit
+	case processor.ContentStopped:
+		m.contentStopped = true
+		if m.groupsStopped {
+			cmd = tea.Quit
+		}
+		return m, cmd
+	case processor.GroupsStopped:
+		m.groupsStopped = true
+		if m.contentStopped {
+			cmd = tea.Quit
+		}
+		return m, cmd
 	case processor.JQCommand:
 		return m.handleProcessorJQCommand(msg)
 	case tea.WindowSizeMsg:
@@ -152,14 +160,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // with a faint style.
 func (m *Model) View() string {
 	if m.zoomed {
-		border := lipgloss.NewStyle().Border(lipgloss.NormalBorder(), false, false, true).BorderForeground(lipgloss.Color("#9ACD32"))
+		border := lipgloss.NewStyle().Border(lipgloss.NormalBorder(), false, false, true).BorderForeground(lipgloss.Color("#6CB0D2"))
 		return lipgloss.JoinVertical(lipgloss.Top,
 			border.Render(m.outputModel.View()),
 			m.footerView(),
 		)
 	}
-	border := lipgloss.NewStyle().Border(lipgloss.NormalBorder(), true).BorderForeground(lipgloss.Color("#9ACD32"))
-	faint := border.Faint(true).BorderForeground(lipgloss.Color("#50545c"))
+	border := lipgloss.NewStyle().Border(lipgloss.NormalBorder(), true).BorderForeground(lipgloss.Color("#6CB0D2"))
+	faint := border.Faint(true).BorderForeground(lipgloss.Color("#505050"))
 	var selectorView, formatView, groupsView, outputView string
 	switch m.selectedWindow {
 	case selectorWindow:
@@ -219,8 +227,6 @@ func (m *Model) handleProcessorContentStart(msg processor.ContentStart) (tea.Mod
 // content from the watched file.
 func (m *Model) handleProcessorContentError(msg processor.ContentError) (tea.Model, tea.Cmd) {
 	m.jq = msg.Jq
-	m.groups = map[string]struct{}{}
-	m.groups["*"] = struct{}{}
 	cmd := m.groupsModel.SetItems(getGroupItems(m.groups))
 	m.outputModel.SetContent(msg.Err.Error() + "\n" + msg.Message)
 	return m, cmd
@@ -251,15 +257,14 @@ func (m *Model) handleProcessorGroupsStart(msg processor.GroupsStart) (tea.Model
 	}
 	cmd := m.groupsModel.SetItems(getGroupItems(m.groups))
 	m.groupsModel.ResetSelected()
-	m.reloadFile()
 	m.updateGroupWidth()
-	return m, cmd
+	return m, tea.Batch(cmd, m.reloadContent)
 }
 
 // handleProcessorGroupError handles the processor.GroupError message. This
 // message means that the processor encountered an error when trying to read
 // groups from the watched file.
-func (m *Model) handleProcessorGroupError(msg processor.GroupError) (tea.Model, tea.Cmd) {
+func (m *Model) handleProcessorGroupError(msg processor.GroupsError) (tea.Model, tea.Cmd) {
 	m.jq = msg.Jq
 	m.groups = map[string]struct{}{}
 	m.groups["*"] = struct{}{}
@@ -271,7 +276,7 @@ func (m *Model) handleProcessorGroupError(msg processor.GroupError) (tea.Model, 
 // handleProcessorGroupLine handles the processor.GroupLine message. This
 // message conveys a new group the processor that should be displayed in the
 // groups window.
-func (m *Model) handleProcessorGroupLine(msg processor.GroupLine) (tea.Model, tea.Cmd) {
+func (m *Model) handleProcessorGroupLine(msg processor.GroupsLine) (tea.Model, tea.Cmd) {
 	m.groups[msg.Line] = struct{}{}
 	groupItems := getGroupItems(m.groups)
 	cmd := m.groupsModel.SetItems(groupItems)
@@ -284,8 +289,7 @@ func (m *Model) handleProcessorGroupLine(msg processor.GroupLine) (tea.Model, te
 // commands from the application.
 func (m *Model) handleCommandChannel(msg processor.CommandChannel) (tea.Model, tea.Cmd) {
 	m.processorCmdChan = msg.CmdChan
-	m.reloadFile()
-	return m, nil
+	return m, m.reloadContent
 }
 
 // handleWindowSize handles window size messages. It resizes all elements based
@@ -401,6 +405,7 @@ func (m *Model) handleGlobalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		return m, cmd, false
 	case "g":
 		if m.selectedWindow == outputWindow {
+			m.atBottom = false
 			m.outputModel.GotoTop()
 			return m, cmd, true
 		}
@@ -424,8 +429,7 @@ func (m *Model) handleSelectorMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if len(newValue) > 1 && strings.HasSuffix(newValue, ".") {
 		return m, cmd
 	}
-	m.reloadGroups()
-	return m, cmd
+	return m, tea.Batch(cmd, m.reloadGroups)
 }
 
 // handleFormatMessage handles messages sent to the format window. If the value
@@ -439,8 +443,7 @@ func (m *Model) handleFormatMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if origValue == newValue {
 		return m, cmd
 	}
-	m.reloadFile()
-	return m, cmd
+	return m, tea.Batch(cmd, m.reloadContent)
 }
 
 // handleGroupsMessage handles messages sent to the groups list window. If the
@@ -454,8 +457,7 @@ func (m *Model) handleGroupsMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if origValue == newValue {
 		return m, cmd
 	}
-	m.reloadFile()
-	return m, cmd
+	return m, tea.Batch(cmd, m.reloadContent)
 }
 
 // hadleOutputMessage handles messages sent to the output window. If the message
@@ -510,32 +512,36 @@ func (m *Model) updateOutputModelContent() {
 	}
 }
 
-// stopProcessor issues a processor.StopOperation to the currently connected
-// processor. This begins the process of stopping the application.
+// stopProcessor is a tea.Cmd that issues a processor.StopOperation to the
+// currently connected processor. This begins the process of stopping the
+// application.
 func (m *Model) stopProcessor() {
 	m.processorCmdChan <- processor.Command{
 		Operation: processor.StopOperation,
 	}
 }
 
-// reloadGroups issues a processor.StartGroupsOperation to the currently
-// connected processor. This begins the process of re-reading groups from the
-// file.
-func (m *Model) reloadGroups() {
+// reloadGroups is a tea.Cmd that issues a processor.StartGroupsOperation to the
+// currently connected processor. This begins the process of re-reading groups
+// from the file. It returns no message.
+func (m *Model) reloadGroups() tea.Msg {
+	m.groups = map[string]struct{}{}
+	m.groups["*"] = struct{}{}
 	m.processorCmdChan <- processor.Command{
 		Operation: processor.StartGroupsOperation,
 		Selector:  m.selectorModel.Value(),
 		Path:      m.path,
 	}
+	return nil
 }
 
-// reloadFile issues a processor.StartContentOperation to the currently
-// connected processor. This begins the process of re-reading content from the
-// file.
-func (m *Model) reloadFile() {
-	m.outputModel.SetContent("")
-	m.rawOutputContent = nil
-	m.outputContent = nil
+// reloadContent is a tea.Cmd that issues a processor.StartContentOperation to
+// the currently connected processor. This begins the process of re-reading
+// content from the file. It returns no message.
+func (m *Model) reloadContent() tea.Msg {
+	m.rawOutputContent = []string{"Loading..."}
+	m.outputContent = []string{"Loading..."}
+	m.outputModel.SetContent("Loading...")
 	selectedItem := m.groupsModel.SelectedItem()
 	selectedItemText := "*"
 	if selectedItem != nil {
@@ -548,6 +554,7 @@ func (m *Model) reloadFile() {
 		Group:     selectedItemText,
 		Path:      m.path,
 	}
+	return nil
 }
 
 // formatContentLine returns the given line formatted with the given

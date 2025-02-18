@@ -56,14 +56,14 @@ type ContentLine struct {
 	Line string
 }
 
-// GroupLine is a tea.Msg that conveys a group read by the processor.
-type GroupLine struct {
+// GroupsLine is a tea.Msg that conveys a group read by the processor.
+type GroupsLine struct {
 	Line string
 }
 
-// GroupError is a tea.Msg that conveys an error that occurred when looking
+// GroupsError is a tea.Msg that conveys an error that occurred when looking
 // for groups.
-type GroupError struct {
+type GroupsError struct {
 	Message string
 	Err     error
 	Jq      string
@@ -87,9 +87,14 @@ type GroupsStart struct {
 	InitialGroups []string
 }
 
-// Stopped is a tea.Msg that indicates the processor has stopped. All child
+// ContentStopped is a tea.Msg that indicates the processor has stopped. All child
 // processes are killed, contexts are cancled, and pipes are closed.
-type Stopped struct {
+type ContentStopped struct {
+}
+
+// GroupsStopped is a tea.Msg that indicates the processor has stopped. All child
+// processes are killed, contexts are cancled, and pipes are closed.
+type GroupsStopped struct {
 }
 
 // Run runs the processor for the given tea.Program. It first creates a command
@@ -98,100 +103,140 @@ type Stopped struct {
 func Run(program *tea.Program) {
 	cmdChan := make(chan Command)
 	program.Send(CommandChannel{CmdChan: cmdChan})
-	var contentHandler *streamHandler
-	var groupsHandler *streamHandler
+	contentChan := make(chan streamArgs)
+	groupsChan := make(chan streamArgs)
+	var contentCancel func() = nil
+	var groupsCancel func() = nil
+	go func() {
+		for {
+			streamArgs, ok := <-contentChan
+			if !ok {
+				program.Send(ContentStopped{})
+				return
+			}
+			streamContent(streamArgs)
+		}
+	}()
+	go func() {
+		for {
+			streamArgs, ok := <-groupsChan
+			if !ok {
+				program.Send(GroupsStopped{})
+				return
+			}
+			streamGroups(streamArgs)
+		}
+	}()
 	for {
 		cmd := <-cmdChan
 		switch cmd.Operation {
 		case StartContentOperation:
-			if contentHandler != nil {
-				contentHandler.cancel()
+			if contentCancel != nil {
+				contentCancel()
 			}
-			contentHandler = &streamHandler{}
-			contentHandler.ctx, contentHandler.cancel = context.WithCancel(context.Background())
-			go contentHandler.streamContent(program, cmd)
+			var ctx context.Context
+			ctx, contentCancel = context.WithCancel(context.Background())
+			contentChan <- streamArgs{
+				ctx:     ctx,
+				cancel:  contentCancel,
+				program: program,
+				cmd:     cmd,
+			}
 		case StartGroupsOperation:
-			if groupsHandler != nil {
-				groupsHandler.cancel()
+			if groupsCancel != nil {
+				groupsCancel()
 			}
-			groupsHandler = &streamHandler{}
-			groupsHandler.ctx, groupsHandler.cancel = context.WithCancel(context.Background())
-			go groupsHandler.streamGroups(program, cmd)
+			var ctx context.Context
+			ctx, groupsCancel = context.WithCancel(context.Background())
+			groupsChan <- streamArgs{
+				ctx:     ctx,
+				cancel:  groupsCancel,
+				program: program,
+				cmd:     cmd,
+			}
 		case StopOperation:
-			if contentHandler != nil {
-				contentHandler.cancel()
-				kill(contentHandler.cmds...)
+			if contentCancel != nil {
+				contentCancel()
 			}
-			if groupsHandler != nil {
-				groupsHandler.cancel()
-				kill(groupsHandler.cmds...)
+			if groupsCancel != nil {
+				groupsCancel()
 			}
-			program.Send(Stopped{})
+			close(contentChan)
+			close(groupsChan)
 			return
 		}
 	}
 }
 
-// streamHandler holds the tracking data for a processor process. This includes
+// streamArgs holds the tracking data for a processor process. This includes
 // the context that will stop any child processes, the cancel function for that
 // context, and a slice of the child process commands.
-type streamHandler struct {
-	ctx    context.Context
-	cancel func()
-	cmds   []*exec.Cmd
+type streamArgs struct {
+	ctx     context.Context
+	cancel  func()
+	program *tea.Program
+	cmd     Command
 }
 
 // streamContent parses the file and sends the parsed content to the program.
-func (h *streamHandler) streamContent(program *tea.Program, cmd Command) {
-	arg := createContentArg(cmd.Selector, cmd.Group, cmd.Format)
-	lines, err := h.sendInitialContent(program, arg, cmd)
+func streamContent(args streamArgs) {
+	jqQuery := createJQContentQuery(args.cmd.Selector, args.cmd.Group, args.cmd.Format)
+	consumedLineCount, err := sendInitialContent(args, jqQuery)
 	if err != nil {
 		return
 	}
-	h.streamNewContent(program, arg, lines, cmd)
+	streamNewContent(args, jqQuery, consumedLineCount)
 }
 
 // sendInitialContent parses the current contents of the file and sends them as
 // a ContentStart message to the program. The number of lines read from the file
 // is returned.
-func (h *streamHandler) sendInitialContent(program *tea.Program, arg string, cmd Command) (int, error) {
-	jqCmdString := "jq -r '" + arg + "' '" + cmd.Path + "'"
-	program.Send(JQCommand{
+func sendInitialContent(args streamArgs, jqQuery string) (int, error) {
+	jqCmdString := "jq -r '" + jqQuery + "' '" + args.cmd.Path + "'"
+	args.program.Send(JQCommand{
 		Jq: jqCmdString,
 	})
-	lines, err := countLines(cmd.Path)
+	lineCount, err := countLines(args.cmd.Path)
 	if err != nil {
-		program.Send(ContentError{Message: "sendInitialContent count", Err: err, Jq: jqCmdString})
+		args.program.Send(ContentError{Message: "sendInitialContent count", Err: err, Jq: jqCmdString})
 		return 0, err
 	}
-	headCmd := exec.CommandContext(h.ctx, "head", fmt.Sprintf("-%d", lines), cmd.Path)
-	jqCmd := exec.CommandContext(h.ctx, "jq", "-r", arg, cmd.Path)
+	headCmd := exec.CommandContext(args.ctx, "head", fmt.Sprintf("-%d", lineCount), args.cmd.Path)
+	jqCmd := exec.CommandContext(args.ctx, "jq", "-r", jqQuery, args.cmd.Path)
 	pipe, err := join(headCmd, jqCmd)
 	if err != nil {
-		program.Send(ContentError{Message: "sendInitialContent join", Err: err, Jq: jqCmdString})
+		args.program.Send(ContentError{Message: "sendInitialContent join", Err: err, Jq: jqCmdString})
 		return 0, err
 	}
 	err = start(headCmd, jqCmd)
 	if err != nil {
-		program.Send(ContentError{Message: "sendInitialContent start", Err: err, Jq: jqCmdString})
+		if err != context.Canceled {
+			args.program.Send(ContentError{Message: "sendInitialContent start", Err: err, Jq: jqCmdString})
+		}
 		return 0, err
 	}
 	initialContentBytes, err := io.ReadAll(pipe)
 	if err != nil {
-		program.Send(ContentError{Message: "sendInitialContent io.ReadAll", Err: err, Jq: jqCmdString})
+		args.program.Send(ContentError{Message: "sendInitialContent io.ReadAll", Err: err, Jq: jqCmdString})
 		return 0, err
+	}
+	err = kill(headCmd, jqCmd)
+	if err != nil {
+		args.program.Send(ContentError{Message: "sendInitialContent kill", Err: err, Jq: jqCmdString})
+		return 0, err
+	}
+	// If we were cancled then don't send the content we gathered
+	select {
+	case <-args.ctx.Done():
+		return 0, nil
+	default:
 	}
 	initialContentBytes = bytes.TrimRight(initialContentBytes, "\n")
 	initialContent := strings.Split(string(initialContentBytes), "\n")
-	program.Send(ContentStart{
+	args.program.Send(ContentStart{
 		InitialContent: initialContent,
 	})
-	err = kill(headCmd, jqCmd)
-	if err != nil {
-		program.Send(ContentError{Message: "sendInitialContent kill", Err: err, Jq: jqCmdString})
-		return 0, err
-	}
-	return lines, nil
+	return lineCount, nil
 }
 
 // streamNewContent creates a command pipeline that connects tail -f and jq with
@@ -199,32 +244,35 @@ func (h *streamHandler) sendInitialContent(program *tea.Program, arg string, cmd
 // given Command. The tail command starts at the given startLineNumber. Each
 // line emitted from jq is sent as a ContentLine message to the attached
 // tea.Program.
-func (h *streamHandler) streamNewContent(program *tea.Program, arg string, startLineNumber int, cmd Command) {
-	jqCmdString := "jq -r '" + arg + "' '" + cmd.Path + "'"
-	tailCmd := exec.CommandContext(h.ctx, "tail", "-f", "-n", fmt.Sprintf("+%d", startLineNumber+1), cmd.Path)
-	jqCmd := exec.CommandContext(h.ctx, "jq", "-r", "--unbuffered", arg)
+func streamNewContent(args streamArgs, jqQuery string, startLineNumber int) {
+	jqCmdString := "jq -r '" + jqQuery + "' '" + args.cmd.Path + "'"
+	tailCmd := exec.CommandContext(args.ctx, "tail", "-f", "-n", fmt.Sprintf("+%d", startLineNumber+1), args.cmd.Path)
+	jqCmd := exec.CommandContext(args.ctx, "jq", "-r", "--unbuffered", jqQuery)
 	stdoutPipe, err := join(tailCmd, jqCmd)
 	if err != nil {
-		program.Send(ContentError{Message: "streamNewContent join", Err: err, Jq: jqCmdString})
+		args.program.Send(ContentError{Message: "streamNewContent join", Err: err, Jq: jqCmdString})
+		return
 	}
 	err = start(tailCmd, jqCmd)
 	if err != nil {
-		program.Send(ContentError{Message: "streamNewContent start", Err: err, Jq: jqCmdString})
+		if err != context.Canceled {
+			args.program.Send(ContentError{Message: "streamNewContent start", Err: err, Jq: jqCmdString})
+		}
+		return
 	}
-	h.cmds = []*exec.Cmd{tailCmd, jqCmd}
 	scanner := bufio.NewScanner(stdoutPipe)
 	scanner.Split(bufio.ScanLines)
 	for scanner.Scan() {
 		select {
-		case <-h.ctx.Done():
-			err = kill(h.cmds...)
+		case <-args.ctx.Done():
+			err = kill(tailCmd, jqCmd)
 			if err != nil {
-				program.Send(ContentError{Message: "streamNewContent kill", Err: err, Jq: jqCmdString})
+				args.program.Send(ContentError{Message: "streamNewContent kill", Err: err, Jq: jqCmdString})
 			}
 			return
 		default:
 			line := scanner.Text()
-			program.Send(ContentLine{
+			args.program.Send(ContentLine{
 				Line: line,
 			})
 		}
@@ -232,96 +280,107 @@ func (h *streamHandler) streamNewContent(program *tea.Program, arg string, start
 }
 
 // streamGroups parses the file and sends the parsed content to the program.
-func (h *streamHandler) streamGroups(program *tea.Program, cmd Command) {
-	arg := createGroupsSelectorArg(cmd.Selector)
-	lines, err := h.sendInitialGroups(program, arg, cmd)
+func streamGroups(args streamArgs) {
+	jqQuery := createGroupsSelectorArg(args.cmd.Selector)
+	consumedLineCount, err := sendInitialGroups(args, jqQuery)
 	if err != nil {
 		return
 	}
-	h.streamNewGroups(program, arg, lines, cmd)
+	streamNewGroups(args, jqQuery, consumedLineCount)
 }
 
 // sendInitialGroups parses the current contents of the file and sends them as
-// a ContentStart message to the program. The number of lines read from the file
+// a GroupsStart message to the program. The number of lines read from the file
 // is returned.
-func (h *streamHandler) sendInitialGroups(program *tea.Program, arg string, cmd Command) (int, error) {
-	jqCmdString := "jq -r '" + arg + "' '" + cmd.Path + "'"
-	lines, err := countLines(cmd.Path)
+func sendInitialGroups(args streamArgs, jqQuery string) (int, error) {
+	jqCmdString := "jq -r '" + jqQuery + "' '" + args.cmd.Path + "'"
+	lines, err := countLines(args.cmd.Path)
 	if err != nil {
-		program.Send(GroupError{Message: "sendInitialContent count", Err: err, Jq: jqCmdString})
+		args.program.Send(GroupsError{Message: "sendInitialGroups count", Err: err, Jq: jqCmdString})
 		return 0, err
 	}
-	headCmd := exec.Command("head", fmt.Sprintf("-%d", lines), cmd.Path)
-	jqCmd := exec.Command("jq", "-r", arg, cmd.Path)
+	headCmd := exec.CommandContext(args.ctx, "head", fmt.Sprintf("-%d", lines), args.cmd.Path)
+	jqCmd := exec.CommandContext(args.ctx, "jq", "-r", jqQuery, args.cmd.Path)
 	pipe, err := join(headCmd, jqCmd)
 	if err != nil {
-		program.Send(GroupError{Message: "sendInitialContent join", Err: err, Jq: jqCmdString})
+		args.program.Send(GroupsError{Message: "sendInitialGroups join", Err: err, Jq: jqCmdString})
 		return 0, err
 	}
 	err = start(headCmd, jqCmd)
 	if err != nil {
-		program.Send(GroupError{Message: "sendInitialContent start", Err: err, Jq: jqCmdString})
+		if err != context.Canceled {
+			args.program.Send(GroupsError{Message: "sendInitialGroups start", Err: err, Jq: jqCmdString})
+		}
 		return 0, err
 	}
 	initialContentBytes, err := io.ReadAll(pipe)
 	if err != nil {
-		program.Send(GroupError{Message: "sendInitialContent io.ReadAll", Err: err, Jq: jqCmdString})
+		args.program.Send(GroupsError{Message: "sendInitialGroups io.ReadAll", Err: err, Jq: jqCmdString})
 		return 0, err
+	}
+	err = kill(headCmd, jqCmd)
+	if err != nil {
+		args.program.Send(GroupsError{Message: "sendInitialContent kill", Err: err, Jq: jqCmdString})
+		return 0, err
+	}
+	// If we were cancled then don't send the content we gathered
+	select {
+	case <-args.ctx.Done():
+		return 0, nil
+	default:
 	}
 	var initialContent []string
 	if len(initialContentBytes) != 0 && initialContentBytes[0] != '{' && initialContentBytes[0] != '[' {
 		initialContentBytes = bytes.TrimRight(initialContentBytes, "\n")
 		initialContent = strings.Split(string(initialContentBytes), "\n")
 	}
-	program.Send(GroupsStart{
+	args.program.Send(GroupsStart{
 		InitialGroups: initialContent,
 	})
-	err = kill(headCmd, jqCmd)
-	if err != nil {
-		program.Send(GroupError{Message: "sendInitialContent kill", Err: err, Jq: jqCmdString})
-		return 0, err
-	}
 	return lines, nil
 }
 
-// streamGroups creates a command pipeline that connects tail -f and jq with a
+// streamNewGroups creates a command pipeline that connects tail -f and jq with a
 // query string assembled from the Selector field of the given Command. Each
-// line emitted from jq is sent as a GroupLine message to the attached
+// line emitted from jq is sent as a GroupsLine message to the attached
 // tea.Program.
-func (h *streamHandler) streamNewGroups(program *tea.Program, arg string, startLineNumber int, cmd Command) {
-	jqCmdString := "jq -r '" + arg + "' '" + cmd.Path + "'"
-	tailCmd := exec.CommandContext(h.ctx, "tail", "-f", "-n", fmt.Sprintf("+%d", startLineNumber+1), cmd.Path)
-	jqCmd := exec.CommandContext(h.ctx, "jq", "-r", "--unbuffered", arg)
+func streamNewGroups(args streamArgs, jqQuery string, startLineNumber int) {
+	jqCmdString := "jq -r '" + jqQuery + "' '" + args.cmd.Path + "'"
+	tailCmd := exec.CommandContext(args.ctx, "tail", "-f", "-n", fmt.Sprintf("+%d", startLineNumber+1), args.cmd.Path)
+	jqCmd := exec.CommandContext(args.ctx, "jq", "-r", "--unbuffered", jqQuery)
 	stdoutPipe, err := join(tailCmd, jqCmd)
 	if err != nil {
-		program.Send(GroupError{Message: "streamGroups join", Err: err, Jq: jqCmdString})
+		args.program.Send(GroupsError{Message: "streamNewGroups join", Err: err, Jq: jqCmdString})
+		return
 	}
 	err = start(tailCmd, jqCmd)
 	if err != nil {
-		program.Send(GroupError{Message: "streamGroups start", Err: err, Jq: jqCmdString})
+		if err != context.Canceled {
+			args.program.Send(GroupsError{Message: "streamNewGroups start", Err: err, Jq: jqCmdString})
+		}
+		return
 	}
-	h.cmds = []*exec.Cmd{tailCmd, jqCmd}
 	scanner := bufio.NewScanner(stdoutPipe)
 	scanner.Split(bufio.ScanLines)
 	for scanner.Scan() {
 		select {
-		case <-h.ctx.Done():
-			err = kill(h.cmds...)
+		case <-args.ctx.Done():
+			err = kill(tailCmd, jqCmd)
 			if err != nil {
-				program.Send(GroupError{Message: "streamGroups kill", Err: err, Jq: jqCmdString})
+				args.program.Send(GroupsError{Message: "streamNewGroups kill", Err: err, Jq: jqCmdString})
 			}
 			return
 		default:
 			line := scanner.Text()
 			if line == "" || line[0] == '{' || line[0] == '[' {
-				h.cancel()
-				err = kill(h.cmds...)
+				args.cancel()
+				err = kill(tailCmd, jqCmd)
 				if err != nil {
-					program.Send(GroupError{Message: "streamGroups kill", Err: err, Jq: jqCmdString})
+					args.program.Send(GroupsError{Message: "streamNewGroups kill", Err: err, Jq: jqCmdString})
 				}
 				return
 			}
-			program.Send(GroupLine{
+			args.program.Send(GroupsLine{
 				Line: line,
 			})
 		}
@@ -394,14 +453,14 @@ func join(cmds ...*exec.Cmd) (io.Reader, error) {
 	return io.MultiReader(stdout, stderr), nil
 }
 
-// createContentArg returns a jq query string for the given selector, group, and
+// createJQContentQuery returns a jq query string for the given selector, group, and
 // format. The selector identifies the field that must exist in the JSON
 // objects, the group represents the value that the field must have, and the
 // format represents the format of the object to return. For example,
 // seletor:= ".level"
 // group:="error"
 // format:=".timeStamp + \":\" + .message"
-func createContentArg(selector, group, format string) string {
+func createJQContentQuery(selector, group, format string) string {
 	if selector == "" {
 		selector = "."
 	}
