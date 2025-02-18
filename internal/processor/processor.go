@@ -192,7 +192,7 @@ func streamContent(args streamArgs) {
 // a ContentStart message to the program. The number of lines read from the file
 // is returned.
 func sendInitialContent(args streamArgs, jqQuery string) (int, error) {
-	jqCmdString := "jq -r '" + jqQuery + "' '" + args.cmd.Path + "'"
+	jqCmdString := "jq -Rr '" + jqQuery + "' '" + args.cmd.Path + "'"
 	args.program.Send(JQCommand{
 		Jq: jqCmdString,
 	})
@@ -202,8 +202,8 @@ func sendInitialContent(args streamArgs, jqQuery string) (int, error) {
 		return 0, err
 	}
 	headCmd := exec.CommandContext(args.ctx, "head", fmt.Sprintf("-%d", lineCount), args.cmd.Path)
-	jqCmd := exec.CommandContext(args.ctx, "jq", "-r", jqQuery, args.cmd.Path)
-	pipe, err := join(headCmd, jqCmd)
+	jqCmd := exec.CommandContext(args.ctx, "jq", "-Rr", jqQuery, args.cmd.Path)
+	pipe, err := joinWithStderr(headCmd, jqCmd)
 	if err != nil {
 		args.program.Send(ContentError{Message: "sendInitialContent join", Err: err, Jq: jqCmdString})
 		return 0, err
@@ -245,10 +245,10 @@ func sendInitialContent(args streamArgs, jqQuery string) (int, error) {
 // line emitted from jq is sent as a ContentLine message to the attached
 // tea.Program.
 func streamNewContent(args streamArgs, jqQuery string, startLineNumber int) {
-	jqCmdString := "jq -r '" + jqQuery + "' '" + args.cmd.Path + "'"
+	jqCmdString := "jq -Rr '" + jqQuery + "' '" + args.cmd.Path + "'"
 	tailCmd := exec.CommandContext(args.ctx, "tail", "-f", "-n", fmt.Sprintf("+%d", startLineNumber+1), args.cmd.Path)
-	jqCmd := exec.CommandContext(args.ctx, "jq", "-r", "--unbuffered", jqQuery)
-	stdoutPipe, err := join(tailCmd, jqCmd)
+	jqCmd := exec.CommandContext(args.ctx, "jq", "-Rr", "--unbuffered", jqQuery)
+	stdoutPipe, err := joinWithStderr(tailCmd, jqCmd)
 	if err != nil {
 		args.program.Send(ContentError{Message: "streamNewContent join", Err: err, Jq: jqCmdString})
 		return
@@ -293,14 +293,14 @@ func streamGroups(args streamArgs) {
 // a GroupsStart message to the program. The number of lines read from the file
 // is returned.
 func sendInitialGroups(args streamArgs, jqQuery string) (int, error) {
-	jqCmdString := "jq -r '" + jqQuery + "' '" + args.cmd.Path + "'"
+	jqCmdString := "jq -Rr '" + jqQuery + "' '" + args.cmd.Path + "'"
 	lines, err := countLines(args.cmd.Path)
 	if err != nil {
 		args.program.Send(GroupsError{Message: "sendInitialGroups count", Err: err, Jq: jqCmdString})
 		return 0, err
 	}
 	headCmd := exec.CommandContext(args.ctx, "head", fmt.Sprintf("-%d", lines), args.cmd.Path)
-	jqCmd := exec.CommandContext(args.ctx, "jq", "-r", jqQuery, args.cmd.Path)
+	jqCmd := exec.CommandContext(args.ctx, "jq", "-Rr", jqQuery, args.cmd.Path)
 	pipe, err := join(headCmd, jqCmd)
 	if err != nil {
 		args.program.Send(GroupsError{Message: "sendInitialGroups join", Err: err, Jq: jqCmdString})
@@ -345,9 +345,9 @@ func sendInitialGroups(args streamArgs, jqQuery string) (int, error) {
 // line emitted from jq is sent as a GroupsLine message to the attached
 // tea.Program.
 func streamNewGroups(args streamArgs, jqQuery string, startLineNumber int) {
-	jqCmdString := "jq -r '" + jqQuery + "' '" + args.cmd.Path + "'"
+	jqCmdString := "jq -Rr '" + jqQuery + "' '" + args.cmd.Path + "'"
 	tailCmd := exec.CommandContext(args.ctx, "tail", "-f", "-n", fmt.Sprintf("+%d", startLineNumber+1), args.cmd.Path)
-	jqCmd := exec.CommandContext(args.ctx, "jq", "-r", "--unbuffered", jqQuery)
+	jqCmd := exec.CommandContext(args.ctx, "jq", "-Rr", "--unbuffered", jqQuery)
 	stdoutPipe, err := join(tailCmd, jqCmd)
 	if err != nil {
 		args.program.Send(GroupsError{Message: "streamNewGroups join", Err: err, Jq: jqCmdString})
@@ -432,9 +432,23 @@ func start(cmds ...*exec.Cmd) error {
 }
 
 // join connects the stdout of each exec.Cmd in the given slice to the next
-// exec.Cmd in the slice. An io.MultiReader connected to the stdout and stderr
-// of the last exec.Cmd in the list is returned.
+// exec.Cmd in the slice. A reader connected to the stdout of the last exec.Cmd
+// in the list is returned.
 func join(cmds ...*exec.Cmd) (io.Reader, error) {
+	for i := 0; i < len(cmds)-1; i++ {
+		stdout, err := cmds[i].StdoutPipe()
+		if err != nil {
+			return nil, err
+		}
+		cmds[i+1].Stdin = stdout
+	}
+	return cmds[len(cmds)-1].StdoutPipe()
+}
+
+// joinWithStderr connects the stdout of each exec.Cmd in the given slice to the
+// next exec.Cmd in the slice. An io.MultiReader connected to the stdout and
+// stderr of the last exec.Cmd in the list is returned.
+func joinWithStderr(cmds ...*exec.Cmd) (io.Reader, error) {
 	for i := 0; i < len(cmds)-1; i++ {
 		stdout, err := cmds[i].StdoutPipe()
 		if err != nil {
@@ -468,9 +482,9 @@ func createJQContentQuery(selector, group, format string) string {
 		format = "."
 	}
 	if group == "*" {
-		return fmt.Sprintf(".|select(%s)|%s", selector, format)
+		return fmt.Sprintf(".|fromjson|select(%s)|%s", selector, format)
 	}
-	return fmt.Sprintf(".|select(%s==\"%s\")|%s", selector, group, format)
+	return fmt.Sprintf(".|fromjson|select(%s==\"%s\")|%s", selector, group, format)
 }
 
 // createGroupsSelectorArg returns a jq query string for the given selector. It
@@ -480,7 +494,7 @@ func createJQContentQuery(selector, group, format string) string {
 // objects where the selector matches the value.
 func createGroupsSelectorArg(selector string) string {
 	if selector == "" {
-		return "."
+		return ".|fromjson"
 	}
-	return fmt.Sprintf(".|select(%s)|%s", selector, selector)
+	return fmt.Sprintf(".|fromjson|select(%s)|%s", selector, selector)
 }
