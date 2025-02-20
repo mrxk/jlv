@@ -475,11 +475,16 @@ func (m *Model) handleOutputMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 // between them to put the percentage at the right of the screen.
 func (m *Model) footerView() string {
 	scrollPercent := fmt.Sprintf("%3.f%%", m.outputModel.ScrollPercent()*100)
-	spaceCount := m.selectorModel.Width - len(m.jq) - len(scrollPercent)
-	if spaceCount < 0 {
+	spaceCount := m.selectorModel.Width - len(scrollPercent) - 1
+	if spaceCount < 4 {
 		return ""
 	}
-	return fmt.Sprintf(" %s%s%s", m.jq, strings.Repeat(" ", spaceCount), scrollPercent)
+	if spaceCount < len(m.jq) {
+		fmtString := fmt.Sprintf(" %%-%d.%ds... %%s", spaceCount-3, spaceCount-3)
+		return fmt.Sprintf(fmtString, m.jq, scrollPercent)
+	}
+	fmtString := fmt.Sprintf(" %%-%d.%ds %%s", spaceCount, spaceCount)
+	return fmt.Sprintf(fmtString, m.jq, scrollPercent)
 }
 
 // updateGroupWidth sizes the groups window to fit the current list of groups.
@@ -560,6 +565,9 @@ func (m *Model) reloadContent() tea.Msg {
 // formatContentLine returns the given line formatted with the given
 // characteristics.
 func formatContentLine(wrapped, lineNumbers bool, idx, width int, line string) []string {
+	if width < 1 {
+		return nil
+	}
 	if lineNumbers {
 		line = fmt.Sprintf("%5d: %s", idx, line)
 	}
