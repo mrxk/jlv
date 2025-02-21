@@ -26,6 +26,7 @@ go install github.com/mrxk/jlv@latest
 
 ## Requirements
 
+* head
 * tail
 * [jq](https://jqlang.org/)
 

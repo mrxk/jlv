@@ -192,7 +192,7 @@ func streamContent(args streamArgs) {
 // a ContentStart message to the program. The number of lines read from the file
 // is returned.
 func sendInitialContent(args streamArgs, jqQuery string) (int, error) {
-	jqCmdString := "jq -Rr '" + jqQuery + "' '" + args.cmd.Path + "'"
+	jqCmdString := "jq -Rr '" + jqQuery + "'"
 	args.program.Send(JQCommand{
 		Jq: jqCmdString,
 	})
@@ -245,7 +245,7 @@ func sendInitialContent(args streamArgs, jqQuery string) (int, error) {
 // line emitted from jq is sent as a ContentLine message to the attached
 // tea.Program.
 func streamNewContent(args streamArgs, jqQuery string, startLineNumber int) {
-	jqCmdString := "jq -Rr '" + jqQuery + "' '" + args.cmd.Path + "'"
+	jqCmdString := "jq -Rr '" + jqQuery + "'"
 	tailCmd := exec.CommandContext(args.ctx, "tail", "-f", "-n", fmt.Sprintf("+%d", startLineNumber+1), args.cmd.Path)
 	jqCmd := exec.CommandContext(args.ctx, "jq", "-Rr", "--unbuffered", jqQuery)
 	stdoutPipe, err := joinWithStderr(tailCmd, jqCmd)
@@ -293,7 +293,7 @@ func streamGroups(args streamArgs) {
 // a GroupsStart message to the program. The number of lines read from the file
 // is returned.
 func sendInitialGroups(args streamArgs, jqQuery string) (int, error) {
-	jqCmdString := "jq -Rr '" + jqQuery + "' '" + args.cmd.Path + "'"
+	jqCmdString := "jq -Rr '" + jqQuery + "'"
 	lines, err := countLines(args.cmd.Path)
 	if err != nil {
 		args.program.Send(GroupsError{Message: "sendInitialGroups count", Err: err, Jq: jqCmdString})
@@ -345,7 +345,7 @@ func sendInitialGroups(args streamArgs, jqQuery string) (int, error) {
 // line emitted from jq is sent as a GroupsLine message to the attached
 // tea.Program.
 func streamNewGroups(args streamArgs, jqQuery string, startLineNumber int) {
-	jqCmdString := "jq -Rr '" + jqQuery + "' '" + args.cmd.Path + "'"
+	jqCmdString := "jq -Rr '" + jqQuery + "'"
 	tailCmd := exec.CommandContext(args.ctx, "tail", "-f", "-n", fmt.Sprintf("+%d", startLineNumber+1), args.cmd.Path)
 	jqCmd := exec.CommandContext(args.ctx, "jq", "-Rr", "--unbuffered", jqQuery)
 	stdoutPipe, err := join(tailCmd, jqCmd)
