@@ -11,10 +11,12 @@ selected, only ojects with that value for the selected field will be displayed.
 The user can also specify an `output` format which will be used to select values
 from each object to display.  By default, all objects are selected and pretty
 printed. The equivalent `jq` command line is shown at the bottom of the screen.
-The file is watched for changes and new lines are appended to the end of the
-output window. If the window is scrolled to the bottom when new lines arrive
-then the window will be scrolled to remain at the bottom. Otherwise, the new
-lines will be appended off screen.
+
+The file is watched for appended lines. New lines that match the selector are
+added to the groups list. New lines are displayed in the output window according
+to the current format.  If the output window is scrolled to the bottom when new
+lines arrive then the window will be scrolled to remain at the bottom.
+Otherwise, the new lines will be appended off screen.
 
 <img width="1200" alt="A demo of the jlv application" src="screenshot.png">
 
@@ -39,6 +41,8 @@ Usage:
 	jlv [options] <path>
 
 Options:
+	<path>                               The path of the JSON file to watch.
+	                                     "-" for stdin.
 	-s <selector>, --selector=<selector> JSON path to grouping field.
 	-o <format>, --output=<format>       Format of output.
 	-l, --linenumbers                    Show line numbers.
