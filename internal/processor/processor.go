@@ -202,7 +202,7 @@ func sendInitialContent(args streamArgs, jqQuery string) (int, error) {
 		return 0, err
 	}
 	headCmd := exec.CommandContext(args.ctx, "head", fmt.Sprintf("-%d", lineCount), args.cmd.Path)
-	jqCmd := exec.CommandContext(args.ctx, "jq", "-Rr", jqQuery, args.cmd.Path)
+	jqCmd := exec.CommandContext(args.ctx, "jq", "-Rr", jqQuery)
 	pipe, err := joinWithStderr(headCmd, jqCmd)
 	if err != nil {
 		args.program.Send(ContentError{Message: "sendInitialContent join", Err: err, Jq: jqCmdString})
