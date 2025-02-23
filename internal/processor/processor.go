@@ -433,7 +433,7 @@ func start(cmds ...*exec.Cmd) error {
 
 // join connects the stdout of each exec.Cmd in the given slice to the next
 // exec.Cmd in the slice. A reader connected to the stdout of the last exec.Cmd
-// in the list is returned.
+// in the list is returned. Stderr is ignored.
 func join(cmds ...*exec.Cmd) (io.Reader, error) {
 	for i := 0; i < len(cmds)-1; i++ {
 		stdout, err := cmds[i].StdoutPipe()
@@ -446,8 +446,9 @@ func join(cmds ...*exec.Cmd) (io.Reader, error) {
 }
 
 // joinWithStderr connects the stdout of each exec.Cmd in the given slice to the
-// next exec.Cmd in the slice. An io.MultiReader connected to the stdout and
-// stderr of the last exec.Cmd in the list is returned.
+// next exec.Cmd in the slice. The stderr of the last command is redirected to
+// stdou. A io.Reader connected to the stdout of the last exec.Cmd in the list
+// is returned.
 func joinWithStderr(cmds ...*exec.Cmd) (io.Reader, error) {
 	for i := 0; i < len(cmds)-1; i++ {
 		stdout, err := cmds[i].StdoutPipe()
@@ -456,15 +457,13 @@ func joinWithStderr(cmds ...*exec.Cmd) (io.Reader, error) {
 		}
 		cmds[i+1].Stdin = stdout
 	}
+
 	stdout, err := cmds[len(cmds)-1].StdoutPipe()
 	if err != nil {
 		return nil, err
 	}
-	stderr, err := cmds[len(cmds)-1].StderrPipe()
-	if err != nil {
-		return nil, err
-	}
-	return io.MultiReader(stdout, stderr), nil
+	cmds[len(cmds)-1].Stderr = cmds[len(cmds)-1].Stdout
+	return io.MultiReader(stdout), nil
 }
 
 // createJQContentQuery returns a jq query string for the given selector, group, and
